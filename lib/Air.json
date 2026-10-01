@@ -1,0 +1,44 @@
+{
+  "format": "TE_2D_material",
+  "version": 1,
+  "referenceTemperature": 300,
+  "units": {
+    "rho": "kg/m^3",
+    "Cp": "J/(kg K)",
+    "k": "W/(m K)",
+    "sigma": "S/m",
+    "alpha": "V/K",
+    "beta": "1/K",
+    "alphaSlope": "V/K^2",
+    "hall": "m^3/C",
+    "nernst": "V/(K T)",
+    "righiLeduc": "1/T",
+    "magnetoresistance": "1/T^2"
+  },
+  "material": {
+    "name": "Air (1 atm, still)",
+    "rho": 1.1614,
+    "Cp": 1007,
+    "k": 0.0263,
+    "sigma": 1e-14,
+    "alpha": 0,
+    "beta": 0,
+    "alphaSlope": 0,
+    "color": "#46535f",
+    "hall": 0,
+    "nernst": 0,
+    "righiLeduc": 0,
+    "magnetoresistance": 0
+  },
+  "notes": "Dry air at 300 K and atmospheric pressure, treated as a stagnant conducting solid: convection and radiation are not modeled. Density, Cp and k are held constant (density actually varies as 1/T). sigma = 1e-14 S/m is the order of magnitude of fair-weather air conductivity near the ground, which varies with ionization, humidity and aerosols; any value this small behaves as an ideal electrical insulator in this app. alpha = 0, beta = 0 and alphaSlope = 0 are modeling assumptions. Magnetic (3D): hall, nernst, righiLeduc and magnetoresistance = 0: an insulator carries no current, so these coefficients have no effect.",
+  "sources": [
+    {
+      "url": "https://me.psu.edu/cimbala/me405/Links/Appendix_10_11.pdf",
+      "properties": "Table A.11 (abstracted from Schmidt et al., 1984): density, Cp and k at 300 K."
+    },
+    {
+      "url": "https://nap.nationalacademies.org/read/898/chapter/5",
+      "properties": "Order of magnitude of the fair-weather electrical conductivity of air near the surface (1e-14 S/m)."
+    }
+  ]
+}

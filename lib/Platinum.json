@@ -1,0 +1,48 @@
+{
+  "format": "TE_2D_material",
+  "version": 1,
+  "referenceTemperature": 300,
+  "units": {
+    "rho": "kg/m^3",
+    "Cp": "J/(kg K)",
+    "k": "W/(m K)",
+    "sigma": "S/m",
+    "alpha": "V/K",
+    "beta": "1/K",
+    "alphaSlope": "V/K^2",
+    "hall": "m^3/C",
+    "nernst": "V/(K T)",
+    "righiLeduc": "1/T",
+    "magnetoresistance": "1/T^2"
+  },
+  "material": {
+    "name": "Platinum",
+    "rho": 21450,
+    "Cp": 133,
+    "k": 71.6,
+    "sigma": 9204633.034955211,
+    "alpha": -5.28e-06,
+    "beta": 0.0038174926863851844,
+    "alphaSlope": 0,
+    "color": "#b5bbce",
+    "hall": -2.4e-11,
+    "nernst": 0,
+    "righiLeduc": -0.0002209,
+    "magnetoresistance": 4.88e-08
+  },
+  "notes": "Approximate bulk room-temperature preset. Supplier resistivity at 293.15 K and tabulated temperature coefficient are treated as a local linear law and rebased to 300 K. Density, Cp and k are held constant. Seebeck is a representative constant from the cited thermopile table; alphaSlope=0 is an assumption. Not a wide-temperature or thin-film fit. Magnetic (3D): hall = -2.4e-11 m^3/C, an approximate value from Hall-coefficient compilations (e.g. Hurd, 1972) that could not be checked against a primary source: confirm before quantitative use. righiLeduc = sigma*hall = -0.000221 1/T (Wiedemann-Franz law for the Hall components; electrons carry most of the heat). magnetoresistance = (sigma*hall)^2 = 4.9e-08 1/T^2, a Kohler-scale order-of-magnitude upper bound (zero for free electrons; the real value depends on the Fermi surface). nernst = 0: Mott-type estimates give |N| of order 1e-9 V/(K T) with a sign that is not established, negligible here.",
+  "sources": [
+    {
+      "url": "https://www.goodfellow.com/global/platinum-powder-group",
+      "properties": "rho, Cp, k, resistivity and temperature coefficient; reference temperatures differ as documented above."
+    },
+    {
+      "url": "https://patents.google.com/patent/US8696989B2/en",
+      "properties": "Table 1: representative Seebeck coefficient."
+    },
+    {
+      "url": "https://doi.org/10.1103/PhysRevLett.84.2219",
+      "properties": "Zhang et al. (2000): the Wiedemann-Franz law holds for the Hall components in copper, the basis of the Righi-Leduc estimate S = sigma*R_H."
+    }
+  ]
+}

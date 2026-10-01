@@ -1,0 +1,2332 @@
+/* One self-contained factory, executed in the page and serialized into the offline worker. */
+(function (host) {
+  function createCore() {
+    const globalThis = {
+      TE: {}
+    };
+    /* SI units. No dependencies; shared by browser, worker and Node tests. */
+    (function (TE) {
+      'use strict';
+
+      TE.assert = (ok, message) => {
+        if (!ok) throw new Error(message);
+      };
+      TE.phaseRadians = degrees => {
+        TE.assert(Number.isFinite(degrees), 'Phase must be finite.');
+        return degrees % 360 * Math.PI / 180;
+      };
+      TE.finite = (x, name) => {
+        TE.assert(Number.isFinite(x), `${name} must be finite.`);
+        return x;
+      };
+      TE.law = (p, T) => {
+        if (typeof p === 'function') return p(T);
+        if (typeof p === 'number') return p;
+        TE.assert(p && ['linear', 'inverseLinear'].includes(p.type), 'Unknown material law.');
+        const v = p.value,
+          slope = p.slope ?? 0,
+          ref = p.reference ?? 300;
+        return p.type === 'linear' ? v + slope * (T - ref) : v / (1 + slope * (T - ref));
+      };
+      class ThermoelectricMaterial {
+        constructor({
+          rho,
+          Cp,
+          k,
+          sigma,
+          alpha,
+          name = 'Material',
+          dalpha_dT = null,
+          hall = 0,
+          nernst = 0,
+          righiLeduc = 0,
+          magnetoresistance = 0
+        }) {
+          Object.assign(this, {
+            rho,
+            Cp,
+            k,
+            sigma,
+            alpha,
+            name,
+            derivative: dalpha_dT,
+            // Magnetic coefficients (constant): Hall R_H (m³/C), Nernst N (V/(K·T)), Righi–Leduc S (1/T)
+            // and magnetoresistance m (1/T²), defined in the equation guide.
+            hall,
+            nernst,
+            righiLeduc,
+            magnetoresistance
+          });
+        }
+        evaluate(key, T) {
+          TE.assert(Number.isFinite(T) && T > 0, 'Temperature must be finite and > 0 K.');
+          const v = TE.finite(TE.law(this[key], T), `${this.name}: ${key}`);
+          TE.assert(key === 'alpha' || v > 0, `${this.name}: ${key} must be positive.`);
+          return v;
+        }
+        density(T) {
+          return this.evaluate('rho', T);
+        }
+        heatCapacity(T) {
+          return this.evaluate('Cp', T);
+        }
+        thermalConductivity(T) {
+          return this.evaluate('k', T);
+        }
+        electricalConductivity(T) {
+          return this.evaluate('sigma', T);
+        }
+        seebeck(T) {
+          return this.evaluate('alpha', T);
+        }
+        electricalResistivity(T) {
+          return 1 / this.electricalConductivity(T);
+        }
+        peltier(T) {
+          return T * this.seebeck(T);
+        }
+        dalphaDT(T) {
+          if (this.derivative !== null) return TE.law(this.derivative, T);
+          if (typeof this.alpha === 'number') return 0;
+          const h = Math.min(T / 2, Math.max(1, T) * 6e-6);
+          return (this.seebeck(T + h) - this.seebeck(T - h)) / (2 * h);
+        }
+        thomson(T) {
+          return T * this.dalphaDT(T);
+        }
+        ZT(T) {
+          return this.seebeck(T) ** 2 * this.electricalConductivity(T) * T / this.thermalConductivity(T);
+        }
+      }
+      class MaterialCollection {
+        constructor(material) {
+          this.materials = [material];
+        }
+        get material() {
+          return this.materials[0];
+        }
+        addMaterial(m) {
+          this.materials.push(m);
+        }
+      }
+      Object.assign(TE, {
+        ThermoelectricMaterial,
+        MaterialCollection
+      });
+    })(globalThis.TE = globalThis.TE || {});
+
+    /* Conservative application operating envelope, not material certification. */
+    (function (TE) {
+      TE.resultLimits = Object.freeze({
+        temperature: 2000,
+        voltage: 1e6,
+        current: 1e6,
+        Jx: 1e12,
+        Jy: 1e12,
+        qx: 1e12,
+        qy: 1e12,
+        power: 1e12
+      });
+      TE.checkRange = (value, key) => {
+        const limit = TE.resultLimits[key];
+        TE.assert(Number.isFinite(value) && Math.abs(value) <= limit && (key !== 'temperature' || value >= 1), `Result rejected: ${key} is outside the application operating range (${key === 'temperature' ? '1–2000 K' : 'absolute limit ' + limit + ' SI units'}). Check units, dimensions, excitation and material properties. No clipped result is used.`);
+        return value;
+      };
+      TE.checkResult = r => {
+        const periodic = r.method !== 'steady';
+        for (const key of ['temperature', 'voltage', 'current', 'terminalVoltage', 'Jx', 'Jy', 'qx', 'qy']) {
+          const kind = key === 'terminalVoltage' ? 'voltage' : key,
+            value = r[key];
+          const scan = v => {
+            if (Array.isArray(v)) v.forEach(scan);else TE.checkRange(v, kind);
+          };
+          scan(value);
+        }
+        if (periodic) for (const [key, orders] of Object.entries(r.harmonics)) {
+          const kind = key === 'terminalVoltage' ? 'voltage' : key;
+          const scan = z => {
+            if (Array.isArray(z)) z.forEach(scan);else {
+              TE.assert(Number.isFinite(z.re) && Number.isFinite(z.im), 'Result rejected: nonfinite harmonic.');
+              TE.assert(Math.hypot(z.re, z.im) <= TE.resultLimits[kind] * 2, 'Result rejected: harmonic exceeds the application operating range.');
+            }
+          };
+          scan(orders);
+        }
+        return r;
+      };
+    })(globalThis.TE);
+    (function (TE) {
+      // Peak phasors: u(t)=U0+Re(sum(Un*exp(i*n*omega*t))).
+      TE.extractHarmonics = (history, count = 3) => {
+        const n = history.length,
+          scalar = typeof history[0] === 'number';
+        TE.assert(Number.isInteger(count) && count >= 0 && n > 2 * count, 'Too few samples for requested harmonics.');
+        const data = scalar ? history.map(v => [v]) : history,
+          width = data[0].length;
+        return Array.from({
+          length: count + 1
+        }, (_, k) => {
+          const row = Array.from({
+            length: width
+          }, () => ({
+            re: 0,
+            im: 0
+          }));
+          for (let i = 0; i < n; i++) {
+            const a = 2 * Math.PI * k * i / n,
+              scale = (k ? 2 : 1) / n;
+            for (let j = 0; j < width; j++) {
+              row[j].re += data[i][j] * Math.cos(a) * scale;
+              row[j].im -= data[i][j] * Math.sin(a) * scale;
+            }
+          }
+          return scalar ? row[0] : row;
+        });
+      };
+      // Aitken-style extrapolation of three successive cycle-start states a, b, c. Returns the shift
+      // d·λ/(1 − λ) along d = c − b when the drift is geometric (0 < λ < maxRatio) along a stable
+      // direction (cosine between successive drifts > minCosine); otherwise null. The factor is capped.
+      TE.cycleExtrapolation = ([a, b, c], {
+        maxRatio = .995,
+        minCosine = .999,
+        maxFactor = 200
+      } = {}) => {
+        let d11 = 0,
+          d12 = 0,
+          d22 = 0;
+        for (let i = 0; i < c.length; i++) {
+          const d1 = b[i] - a[i],
+            d2 = c[i] - b[i];
+          d11 += d1 * d1;
+          d12 += d1 * d2;
+          d22 += d2 * d2;
+        }
+        if (!(d11 > 0 && d22 > 0 && Number.isFinite(d11 + d12 + d22))) return null;
+        const ratio = d12 / d11,
+          cosine = d12 / Math.sqrt(d11 * d22);
+        if (!(ratio > 0 && ratio < maxRatio && cosine > minCosine)) return null;
+        const factor = Math.min(ratio / (1 - ratio), maxFactor);
+        return {
+          ratio,
+          factor,
+          shift: c.map((v, i) => (v - b[i]) * factor)
+        };
+      };
+    })(globalThis.TE);
+    (function (TE) {
+      class Mesh2D {
+        constructor({
+          nx,
+          ny,
+          lx,
+          ly,
+          depth = 1,
+          materialMap
+        }) {
+          TE.assert(Number.isInteger(nx) && Number.isInteger(ny) && nx >= 2 && ny >= 1, 'Use at least 2 cells along x and 1 along y.');
+          TE.assert((nx + 1) * (ny + 1) <= 1600, 'Maximum 1600 nodes in this browser version.');
+          TE.assert([lx, ly, depth].every(v => Number.isFinite(v) && v > 0), 'Dimensions and depth must be positive.');
+          Object.assign(this, {
+            nx,
+            ny,
+            lx,
+            ly,
+            depth
+          });
+          this.dx = lx / nx;
+          this.dy = ly / ny;
+          this.n = (nx + 1) * (ny + 1);
+          this.map = materialMap ?? Array(nx * ny).fill(0);
+          TE.assert(this.map.length === nx * ny, 'Material map size does not match the grid.');
+          this.x = [];
+          this.y = [];
+          this.cells = [];
+          this.links = [];
+          this.volumes = Array(this.n).fill(0);
+          for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) {
+            this.x.push(i * this.dx);
+            this.y.push(j * this.dy);
+          }
+          const volume = this.dx * this.dy * depth;
+          TE.assert([volume / 4, this.dx * depth / 2, this.dy * depth / 2].every(v => Number.isFinite(v) && v > 0), 'Dimensions produce zero or overflowing volumes/areas.');
+          for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+            const a = j * (nx + 1) + i,
+              b = a + 1,
+              c = a + nx + 1,
+              d = c + 1,
+              id = j * nx + i,
+              m = this.map[id];
+            const nodes = [a, b, c, d];
+            nodes.forEach(n => this.volumes[n] += volume / 4);
+            const first = this.links.length;
+            this.links.push({
+              a,
+              b,
+              m,
+              A: this.dy * depth / 2,
+              L: this.dx,
+              axis: 0,
+              cell: id
+            }, {
+              a: c,
+              b: d,
+              m,
+              A: this.dy * depth / 2,
+              L: this.dx,
+              axis: 0,
+              cell: id
+            }, {
+              a,
+              b: c,
+              m,
+              A: this.dx * depth / 2,
+              L: this.dy,
+              axis: 1,
+              cell: id
+            }, {
+              a: b,
+              b: d,
+              m,
+              A: this.dx * depth / 2,
+              L: this.dy,
+              axis: 1,
+              cell: id
+            });
+            this.cells.push({
+              nodes,
+              m,
+              volume,
+              links: [first, first + 1, first + 2, first + 3]
+            });
+          }
+          this.sides = {
+            left: [],
+            right: [],
+            bottom: [],
+            top: []
+          };
+          for (let j = 0; j <= ny; j++) {
+            const A = this.dy * depth * (j === 0 || j === ny ? .5 : 1);
+            this.sides.left.push({
+              node: j * (nx + 1),
+              A,
+              u: j / ny
+            });
+            this.sides.right.push({
+              node: j * (nx + 1) + nx,
+              A,
+              u: j / ny
+            });
+          }
+          for (let i = 0; i <= nx; i++) {
+            const A = this.dx * depth * (i === 0 || i === nx ? .5 : 1);
+            this.sides.bottom.push({
+              node: i,
+              A,
+              u: i / nx
+            });
+            this.sides.top.push({
+              node: ny * (nx + 1) + i,
+              A,
+              u: i / nx
+            });
+          }
+        }
+        electrode(side, range = [0, 1]) {
+          TE.assert(this.sides[side] && range.length === 2 && range.every(Number.isFinite) && range[0] >= 0 && range[1] <= 1 && range[1] > range[0], 'Invalid electrode side/range.');
+          const nodes = this.sides[side].filter(f => f.u >= range[0] - 1e-12 && f.u <= range[1] + 1e-12).map(f => f.node);
+          TE.assert(nodes.length >= 2, 'Each electrode needs at least two boundary nodes. Refine the grid or increase coverage.');
+          return nodes;
+        }
+      }
+      TE.Mesh2D = Mesh2D;
+    })(globalThis.TE);
+    (function (TE) {
+      // Cache only topology and work buffers: conductances and boundary values are rebuilt.
+      const layouts = new WeakMap();
+      function graphLayout(mesh, fixed) {
+        let cache = layouts.get(mesh);
+        if (!cache) layouts.set(mesh, cache = new Map());
+        const key = [...fixed.keys()].sort((a, b) => a - b).join(',');
+        if (cache.has(key)) return cache.get(key);
+        const idx = new Int32Array(mesh.n).fill(-1),
+          free = [];
+        for (let i = 0; i < mesh.n; i++) if (!fixed.has(i)) {
+          idx[i] = free.length;
+          free.push(i);
+        }
+        const endpoints = mesh.links.map(e => [idx[e.a], idx[e.b]]);
+        // Flat typed arrays of links joining two free nodes: the hot matrix-vector product
+        // then avoids per-link array destructuring and boundary tests.
+        const inner = [];
+        endpoints.forEach(([a, b], l) => {
+          if (a >= 0 && b >= 0) inner.push(l);
+        });
+        const layout = {
+          idx,
+          free,
+          endpoints,
+          innerLink: Int32Array.from(inner),
+          innerA: Int32Array.from(inner, l => endpoints[l][0]),
+          innerB: Int32Array.from(inner, l => endpoints[l][1]),
+          innerG: new Float64Array(inner.length)
+        };
+        for (const name of ['D', 'b', 'x', 'r', 'z', 'p', 'Ap']) layout[name] = new Float64Array(free.length);
+        // Bounded cache for callers that repeatedly change boundary-node selections.
+        if (cache.size >= 8) cache.delete(cache.keys().next().value);
+        cache.set(key, layout);
+        return layout;
+      }
+      TE.graphSolve = (mesh, conductance, diagonal, rhs, fixed, {
+        rtol = 2e-12,
+        maxIter = 4000,
+        initial
+      } = {}) => {
+        TE.assert(Number.isFinite(rtol) && rtol > 0 && rtol < 1, 'Linear relative tolerance must satisfy 0 < rtol < 1.');
+        TE.assert(Number.isInteger(maxIter) && maxIter > 0, 'Linear iteration limit must be positive.');
+        TE.assert(conductance.length === mesh.links.length && conductance.every(g => Number.isFinite(g) && g > 0), 'Invalid face conductance.');
+        TE.assert(!initial || initial.length === mesh.n && initial.every(Number.isFinite), 'Invalid linear initial guess.');
+        TE.assert(rhs.length === mesh.n && diagonal.length === mesh.n && rhs.every(Number.isFinite) && diagonal.every(v => Number.isFinite(v) && v >= 0), 'Invalid linear coefficients.');
+        for (const [i, v] of fixed) TE.assert(Number.isInteger(i) && i >= 0 && i < mesh.n && Number.isFinite(v), 'Invalid fixed boundary value.');
+        const {
+          free,
+          endpoints,
+          innerLink,
+          innerA,
+          innerB,
+          innerG,
+          D,
+          b,
+          x,
+          r,
+          z,
+          p,
+          Ap
+        } = graphLayout(mesh, fixed);
+        const out = new Array(mesh.n);
+        for (const [i, v] of fixed) out[i] = v;
+        const nf = free.length;
+        if (!nf) return out;
+        for (let k = 0; k < nf; k++) {
+          const i = free[k];
+          D[k] = diagonal[i];
+          b[k] = rhs[i];
+          x[k] = initial ? initial[i] : 0;
+        }
+        for (let l = 0; l < mesh.links.length; l++) {
+          const [a, bb] = endpoints[l],
+            e = mesh.links[l],
+            g = conductance[l];
+          if (a >= 0) {
+            D[a] += g;
+            if (bb < 0) b[a] += g * fixed.get(e.b);
+          }
+          if (bb >= 0) {
+            D[bb] += g;
+            if (a < 0) b[bb] += g * fixed.get(e.a);
+          }
+        }
+        for (const d of D) TE.assert(d > 0 && Number.isFinite(d), 'Unanchored or invalid system.');
+        // Jacobi-weighted residual norm √(rᵀD⁻¹r) = √(r·z). The unweighted norm is dominated by
+        // high-conductance rows (Cu) and stopped before low-conductance regions were resolved.
+        let bDb = 0;
+        for (let i = 0; i < nf; i++) bDb += b[i] * b[i] / D[i];
+        // Zero right-hand side: the SPD system has the exact solution 0. Returning it directly keeps
+        // warm starts safe (a nonzero guess could never meet a zero relative target).
+        if (bDb === 0) {
+          free.forEach(node => out[node] = 0);
+          return out;
+        }
+        const ni = innerLink.length;
+        for (let k = 0; k < ni; k++) innerG[k] = conductance[innerLink[k]];
+        const multiply = v => {
+          for (let i = 0; i < nf; i++) Ap[i] = D[i] * v[i];
+          for (let k = 0; k < ni; k++) {
+            const a = innerA[k],
+              bb = innerB[k],
+              g = innerG[k];
+            Ap[a] -= g * v[bb];
+            Ap[bb] -= g * v[a];
+          }
+        };
+        const dot = (a, b) => {
+          let v = 0;
+          for (let i = 0; i < nf; i++) v += a[i] * b[i];
+          return v;
+        };
+        multiply(x);
+        for (let i = 0; i < nf; i++) {
+          r[i] = b[i] - Ap[i];
+          z[i] = r[i] / D[i];
+          p[i] = z[i];
+        }
+        let rz = dot(r, z),
+          norm = Math.sqrt(Math.max(rz, 0));
+        const target = rtol * Math.max(Math.sqrt(bDb), 1e-300);
+        TE.assert(Number.isFinite(target) && Number.isFinite(norm) && Number.isFinite(rz), 'Linear system exceeds the finite numerical range.');
+        let iteration = 0;
+        while (norm > target && iteration++ < maxIter) {
+          multiply(p);
+          const den = dot(p, Ap);
+          TE.assert(den > 0 && Number.isFinite(den), 'CG failed: matrix not positive definite.');
+          const step = rz / den;
+          for (let i = 0; i < nf; i++) {
+            x[i] += step * p[i];
+            r[i] -= step * Ap[i];
+            z[i] = r[i] / D[i];
+          }
+          const next = dot(r, z),
+            beta = next / rz;
+          for (let i = 0; i < nf; i++) p[i] = z[i] + beta * p[i];
+          rz = next;
+          norm = Math.sqrt(Math.max(rz, 0));
+        }
+        TE.assert(norm <= target && x.every(Number.isFinite), 'Sparse linear solver did not converge to a finite result.');
+        free.forEach((node, i) => out[node] = x[i]);
+        return out;
+      };
+    })(globalThis.TE);
+    (function (TE) {
+      // Direct solver for the non-symmetric systems of the magnetic model (Hall, Righi–Leduc).
+      // Free nodes are numbered along the shorter mesh direction, so a cell couples rows at most
+      // min(nx, ny) + 2 apart. Banded Gaussian elimination with partial pivoting then costs about
+      // n·w² operations (a few million at the 1600-node cap) and is exact at any Hall angle.
+      const layouts = new WeakMap();
+      function bandLayout(mesh, fixed) {
+        let cache = layouts.get(mesh);
+        if (!cache) layouts.set(mesh, cache = new Map());
+        const key = [...fixed.keys()].sort((a, b) => a - b).join(',');
+        if (cache.has(key)) return cache.get(key);
+        const {nx, ny} = mesh,
+          pos = new Int32Array(mesh.n).fill(-1),
+          order = [];
+        const visit = node => {
+          if (!fixed.has(node)) {
+            pos[node] = order.length;
+            order.push(node);
+          }
+        };
+        if (ny < nx) for (let i = 0; i <= nx; i++) for (let j = 0; j <= ny; j++) visit(j * (nx + 1) + i);
+        else for (let node = 0; node < mesh.n; node++) visit(node);
+        let w = 0;
+        for (const cell of mesh.cells) {
+          const rows = cell.nodes.map(v => pos[v]).filter(v => v >= 0);
+          for (const a of rows) for (const b of rows) w = Math.max(w, Math.abs(a - b));
+        }
+        const layout = {pos, order, w};
+        if (cache.size >= 8) cache.delete(cache.keys().next().value);
+        cache.set(key, layout);
+        return layout;
+      }
+      // cellMatrices: 16 entries per cell, row-major over the cell nodes [a, b, c, d] (mesh.cells[].nodes).
+      // Entry (p, q) is the outflow at node p per volt (or kelvin) at node q. diagonal: extra term per node.
+      // Returns solve(rhs, fixedValues): one factorization serves any number of right-hand sides.
+      TE.cellSystem = (mesh, cellMatrices, diagonal, fixed) => {
+        TE.assert(cellMatrices.length === 16 * mesh.cells.length && diagonal.length === mesh.n, 'Invalid cell system.');
+        const {pos, order, w} = bandLayout(mesh, fixed),
+          n = order.length,
+          kl = w,
+          W = 3 * w + 1,
+          A = new Float64Array(n * W),
+          couplings = [];
+        // Row r stores columns r − kl … r + 2·kl (the upper kl diagonals take the pivoting fill-in).
+        for (let r = 0; r < n; r++) A[r * W + kl] += diagonal[order[r]];
+        mesh.cells.forEach((cell, c) => {
+          for (let p = 0; p < 4; p++) {
+            const row = pos[cell.nodes[p]];
+            if (row < 0) continue;
+            for (let q = 0; q < 4; q++) {
+              const v = cellMatrices[16 * c + 4 * p + q];
+              if (v === 0) continue;
+              const node = cell.nodes[q],
+                col = pos[node];
+              if (col >= 0) A[row * W + col - row + kl] += v;else couplings.push(row, node, v);
+            }
+          }
+        });
+        TE.assert(A.every(Number.isFinite), 'Linear system exceeds the finite numerical range.');
+        const piv = new Int32Array(n);
+        for (let k = 0; k < n; k++) {
+          const last = Math.min(n - 1, k + kl),
+            end = Math.min(n - 1, k + 2 * kl);
+          let p = k,
+            best = Math.abs(A[k * W + kl]);
+          for (let r = k + 1; r <= last; r++) {
+            const v = Math.abs(A[r * W + k - r + kl]);
+            if (v > best) {
+              best = v;
+              p = r;
+            }
+          }
+          TE.assert(best > 0, 'Singular linear system: check that the domain is anchored.');
+          piv[k] = p;
+          if (p !== k) for (let c = k; c <= end; c++) {
+            const i1 = k * W + c - k + kl,
+              i2 = p * W + c - p + kl,
+              t = A[i1];
+            A[i1] = A[i2];
+            A[i2] = t;
+          }
+          const pivot = A[k * W + kl];
+          for (let r = k + 1; r <= last; r++) {
+            const ir = r * W + k - r + kl,
+              f = A[ir] / pivot;
+            A[ir] = f;
+            if (f !== 0) for (let c = k + 1; c <= end; c++) A[r * W + c - r + kl] -= f * A[k * W + c - k + kl];
+          }
+        }
+        return (rhs, fixedValues) => {
+          const b = new Float64Array(n);
+          for (let r = 0; r < n; r++) b[r] = rhs[order[r]];
+          for (let i = 0; i < couplings.length; i += 3) b[couplings[i]] -= couplings[i + 2] * fixedValues.get(couplings[i + 1]);
+          for (let k = 0; k < n; k++) {
+            const p = piv[k];
+            if (p !== k) {
+              const t = b[k];
+              b[k] = b[p];
+              b[p] = t;
+            }
+            const bk = b[k],
+              last = Math.min(n - 1, k + kl);
+            if (bk !== 0) for (let r = k + 1; r <= last; r++) b[r] -= A[r * W + k - r + kl] * bk;
+          }
+          for (let k = n - 1; k >= 0; k--) {
+            const end = Math.min(n - 1, k + 2 * kl);
+            let s = b[k];
+            for (let c = k + 1; c <= end; c++) s -= A[k * W + c - k + kl] * b[c];
+            b[k] = s / A[k * W + kl];
+          }
+          const out = new Array(mesh.n);
+          for (const [node, v] of fixedValues) out[node] = v;
+          for (let r = 0; r < n; r++) out[order[r]] = b[r];
+          TE.assert(out.every(Number.isFinite), 'Linear solve produced a nonfinite result.');
+          return out;
+        };
+      };
+    })(globalThis.TE);
+    (function (TE) {
+      TE.signal2D = (s, t, f) => {
+        if (typeof s === 'number') return TE.finite(s, 'Boundary');
+        TE.assert(s && typeof s === 'object' && !Array.isArray(s), 'Invalid boundary signal.');
+        for (const k of ['bias', 'amplitude', 'phase']) if (s[k] !== undefined) TE.assert(typeof s[k] === 'number' && Number.isFinite(s[k]), 'Boundary ' + k + ' must be a finite number.');
+        return TE.finite((s.bias ?? 0) + (s.amplitude ?? 0) * Math.cos(2 * Math.PI * f * t + TE.phaseRadians(s.phase ?? 0)), 'Boundary');
+      };
+      // Local links of a cell (mesh.cells[].links order) as [from, to] in cell-node order [a, b, c, d]:
+      // x bottom a→b, x top c→d, y left a→c, y right b→d.
+      const LINK_NODES = [[0, 1], [2, 3], [0, 2], [1, 3]];
+      // Node matrix of a cell from its 4×4 link weights W (16 per cell in a flat array): link k carries
+      // Σ_m W[k][m]·Δ_m/L_m, Δ_m the difference along link m (from node minus to node).
+      function addCellMatrix(W, L, c, out) {
+        const o = 16 * c;
+        for (let k = 0; k < 4; k++) for (let m = 0; m < 4; m++) {
+          const w = W[o + 4 * k + m] / L[4 * c + m];
+          if (w === 0) continue;
+          const [ka, kb] = LINK_NODES[k],
+            [ma, mb] = LINK_NODES[m];
+          out[o + 4 * ka + ma] += w;
+          out[o + 4 * ka + mb] -= w;
+          out[o + 4 * kb + ma] -= w;
+          out[o + 4 * kb + mb] += w;
+        }
+      }
+      // Link weights for longitudinal coefficients l0…l3 and transverse coefficients t0…t3: x links take
+      // +t/2 from each y link of the cell, y links −t/2 from each x link (J = σ̂·field, σ̂ = [[l, t], [−t, l]]).
+      function setTensorWeights(W, c, l0, l1, l2, l3, t0, t1, t2, t3) {
+        const o = 16 * c;
+        W[o] = l0; W[o + 1] = 0; W[o + 2] = t0 / 2; W[o + 3] = t0 / 2;
+        W[o + 4] = 0; W[o + 5] = l1; W[o + 6] = t1 / 2; W[o + 7] = t1 / 2;
+        W[o + 8] = -t2 / 2; W[o + 9] = -t2 / 2; W[o + 10] = l2; W[o + 11] = 0;
+        W[o + 12] = -t3 / 2; W[o + 13] = -t3 / 2; W[o + 14] = 0; W[o + 15] = l3;
+      }
+      // Flows of all links for node values x: I_k = Σ_m W[k][m]·Δ_m/L_m (+ base[k] when given).
+      function cellFlows(geometry, W, x, base) {
+        const {nodes, links, L} = geometry,
+          out = new Array(geometry.linkCount);
+        for (let c = 0, nc = nodes.length / 4; c < nc; c++) {
+          const o = 4 * c,
+            a = x[nodes[o]],
+            b = x[nodes[o + 1]],
+            cc = x[nodes[o + 2]],
+            d = x[nodes[o + 3]],
+            f0 = (a - b) / L[o],
+            f1 = (cc - d) / L[o + 1],
+            f2 = (a - cc) / L[o + 2],
+            f3 = (b - d) / L[o + 3];
+          for (let k = 0; k < 4; k++) {
+            const w = 16 * c + 4 * k;
+            out[links[o + k]] = (base ? base[o + k] : 0) + W[w] * f0 + W[w + 1] * f1 + W[w + 2] * f2 + W[w + 3] * f3;
+          }
+        }
+        return out;
+      }
+      class Solver2D {
+        constructor(mesh, materials, boundaries, electrical, {
+          magneticField = 0
+        } = {}) {
+          this.mesh = mesh;
+          this.materials = materials;
+          this.boundaries = boundaries;
+          this.electrical = electrical;
+          this.frequency = 0;
+          this.undampedFailures = 0;
+          TE.assert(Number.isFinite(magneticField), 'Magnetic field must be finite.');
+          this.B = magneticField;
+          const used = [...new Set(mesh.map)].map(id => materials[id]),
+            any = key => magneticField !== 0 && used.some(m => m && m[key]);
+          // Hall, magnetoresistance and Nernst act in the electrical solve; Ettingshausen (from Nernst)
+          // and Righi–Leduc in the heat balance. Without them the 2D equations are solved unchanged.
+          this.hallActive = any('hall') || any('magnetoresistance') || any('nernst');
+          this.nernstActive = any('nernst');
+          this.righiLeducActive = any('righiLeduc');
+          if (this.hallActive || this.righiLeducActive) {
+            const nc = mesh.cells.length,
+              geometry = {nodes: new Int32Array(4 * nc), links: new Int32Array(4 * nc), A: new Float64Array(4 * nc), L: new Float64Array(4 * nc), linkCount: mesh.links.length};
+            mesh.cells.forEach((cell, c) => cell.links.forEach((k, i) => {
+              geometry.nodes[4 * c + i] = cell.nodes[i];
+              geometry.links[4 * c + i] = k;
+              geometry.A[4 * c + i] = mesh.links[k].A;
+              geometry.L[4 * c + i] = mesh.links[k].L;
+            }));
+            this.cellGeometry = geometry;
+          }
+          mesh.map.forEach(id => TE.assert(Number.isInteger(id) && materials[id], 'Unknown material in map.'));
+          TE.assert(['voltage', 'current', 'open_circuit'].includes(electrical.kind), 'Unknown electrical mode.');
+          this.source = mesh.electrode(electrical.sourceSide, electrical.sourceRange);
+          this.sink = mesh.electrode(electrical.sinkSide, electrical.sinkRange);
+          const sourceSet = new Set(this.source);
+          TE.assert(!this.sink.some(i => sourceSet.has(i)), 'Electrodes overlap at a node.');
+          this.sourceSet = sourceSet;
+          for (const side of ['left', 'right', 'bottom', 'top']) {
+            const b = boundaries[side];
+            TE.assert(b && ['temperature', 'flux', 'convection'].includes(b.kind), 'Define all four thermal boundaries.');
+            TE.assert(Number.isFinite(b.h ?? 0) && (b.h ?? 0) >= 0, 'Convection coefficient must be nonnegative.');
+          }
+        }
+        properties(T) {
+          T.forEach(v => TE.checkRange(v, 'temperature'));
+          const m = this.mesh,
+            cap = Array(m.n).fill(0);
+          m.cells.forEach(c => c.nodes.forEach(i => {
+            const a = this.materials[c.m];
+            cap[i] += a.density(T[i]) * a.heatCapacity(T[i]) * c.volume / 4;
+          }));
+          const p = m.links.map(e => {
+            const a = this.materials[e.m],
+              Ta = T[e.a],
+              Tb = T[e.b],
+              rho = (a.electricalResistivity(Ta) + a.electricalResistivity(Tb)) / 2;
+            const link = {
+              g: e.A / (e.L * rho),
+              k: e.A / e.L * (a.thermalConductivity(Ta) + a.thermalConductivity(Tb)) / 2,
+              alpha: (a.seebeck(Ta) + a.seebeck(Tb)) / 2,
+              rho
+            };
+            if (this.righiLeducActive) link.kappa = (a.thermalConductivity(Ta) + a.thermalConductivity(Tb)) / 2;
+            return link;
+          });
+          TE.assert(cap.every(v => Number.isFinite(v) && v > 0), 'Heat capacities overflow or underflow the numerical range.');
+          return {
+            p,
+            cap
+          };
+        }
+        thermal(t) {
+          const m = this.mesh,
+            fixed = new Map(),
+            diag = Array(m.n).fill(0),
+            rhs = Array(m.n).fill(0),
+            flux = Array(m.n).fill(0);
+          for (const [side, faces] of Object.entries(m.sides)) {
+            const b = this.boundaries[side],
+              v = TE.signal2D(b.value, t, this.frequency);
+            if (b.kind === 'temperature' || b.kind === 'convection') TE.assert(v > 0, side + ' temperature must remain strictly above 0 K.');
+            for (const {
+              node,
+              A
+            } of faces) {
+              if (b.kind === 'temperature') {
+                TE.assert(v > 0, 'Temperature must be >0 K.');
+                if (fixed.has(node)) TE.assert(Math.abs(fixed.get(node) - v) < 1e-8, 'Conflicting temperatures at a corner. Use compatible boundary temperatures.');
+                fixed.set(node, v);
+              }
+              if (b.kind === 'flux') {
+                rhs[node] -= v * A;
+                flux[node] += v * A;
+              }
+              if (b.kind === 'convection') {
+                diag[node] += (b.h ?? 0) * A;
+                rhs[node] += (b.h ?? 0) * A * v;
+              }
+            }
+          }
+          return {
+            fixed,
+            diag,
+            rhs,
+            flux
+          };
+        }
+        electric(T, p, t) {
+          if (this.hallActive) return this.magneticElectric(T, p, t);
+          const m = this.mesh,
+            e = this.electrical,
+            g = p.map(v => v.g),
+            zero = Array(m.n).fill(0),
+            rhs = [...zero],
+            fixed = new Map();
+          this.source.forEach(i => fixed.set(i, 0));
+          this.sink.forEach(i => fixed.set(i, 0));
+          m.links.forEach((l, k) => {
+            const s = p[k].g * p[k].alpha * (T[l.b] - T[l.a]);
+            rhs[l.a] += s;
+            rhs[l.b] -= s;
+          });
+          const seebeck = m.links.map((l, k) => p[k].alpha * (T[l.b] - T[l.a]));
+          const current = V => m.links.map((l, k) => g[k] * (V[l.a] - V[l.b] - seebeck[k]));
+          // Passive sign convention: the sink is grounded, the terminal voltage is
+          // U = V(source) − V(sink), and I is the current entering at the source, so a resistor
+          // gives U = R·I and absorbs U·I.
+          // Superpose V = base + U·unit (base: both electrodes at 0 V with Seebeck sources;
+          // unit: source at 1 V, sink at 0 V, no sources). Terminal currents are evaluated by
+          // reciprocity over the whole domain, NOT from potential differences across the
+          // electrode links. Those differences are tiny inside highly conductive contacts (Cu)
+          // and lose all precision when a resistive region sets the current; the link formula
+          // then effectively ignored the resistor. Current entering the source:
+          //   I = Σ I_k (u_a - u_b)  ⇒  Iunit = Σ g(Δu)²,  Ibase = -Σ g·s·Δu.
+          // Warm starts from the previous solutions (same electrodes, slowly varying conductances)
+          // reach the unchanged CG tolerance in fewer iterations than a start from zero.
+          // Validation keeps electrodes on conductors; this message covers any remaining unresolvable contrast.
+          const solve = (source, initial) => {
+            try {
+              return TE.graphSolve(m, g, zero, source, fixed, initial ? {
+                initial
+              } : undefined);
+            } catch (error) {
+              throw new Error(`Electrical solve failed (${error.message}) Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E15), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.`);
+            }
+          };
+          const base = solve(rhs, this.lastBase);
+          this.source.forEach(i => fixed.set(i, 1));
+          const unit = solve(zero, this.lastUnit);
+          this.lastBase = base;
+          this.lastUnit = unit;
+          let Iunit = 0,
+            Ibase = 0;
+          m.links.forEach((l, k) => {
+            const du = unit[l.a] - unit[l.b];
+            Iunit += g[k] * du * du;
+            Ibase -= g[k] * seebeck[k] * du;
+          });
+          TE.assert(Iunit > 0 && Number.isFinite(Iunit) && Number.isFinite(Ibase), 'Electrodes have no conducting connection.');
+          let terminalVoltage;
+          if (e.kind === 'voltage') terminalVoltage = TE.signal2D(e.value, t, this.frequency);else {
+            const target = e.kind === 'open_circuit' ? 0 : TE.signal2D(e.value, t, this.frequency);
+            terminalVoltage = (target - Ibase) / Iunit;
+          }
+          const V = base.map((v, i) => v + terminalVoltage * unit[i]);
+          TE.assert(V.every(Number.isFinite), 'Voltage exceeds the finite numerical range. Check excitation and material values.');
+          V.forEach(v => TE.checkRange(v, 'voltage'));
+          const I = current(V),
+            terminalCurrent = Ibase + terminalVoltage * Iunit;
+          TE.checkRange(terminalCurrent, 'current');
+          TE.assert(I.every(Number.isFinite) && Number.isFinite(terminalCurrent) && Number.isFinite(terminalVoltage), 'Current or terminal voltage exceeds the finite numerical range.');
+          return {
+            V,
+            I,
+            terminalVoltage,
+            current: terminalCurrent
+          };
+        }
+        // Electrical solve in a perpendicular field Bz. With ρ̂ = ρ(1 + mB²)·I + R_H·B·R (R: rotation by
+        // +90°) and 𝓔 = E − ε̂∇T, ε̂ = α·I + N·B·R, the current is J = ρ̂⁻¹𝓔. Each link keeps its own
+        // longitudinal field; the transverse field is the cell average of the two perpendicular links.
+        // The operator is non-symmetric, so the base and unit problems share one banded LU factorization.
+        // Terminal current: I = Σ I_k·Δu_k holds for any currents that satisfy KCL, symmetric or not.
+        magneticElectric(T, p, t) {
+          const m = this.mesh,
+            e = this.electrical,
+            B = this.B,
+            G = this.cellGeometry,
+            nc = m.cells.length,
+            flow0 = new Float64Array(4 * nc),
+            src = new Float64Array(m.n),
+            zero = new Float64Array(m.n);
+          // The matrix depends on temperature only through ρ(T): its factorization is reused while every
+          // link resistivity is unchanged (for β = 0, for the whole run).
+          let cache = this.electricCache;
+          if (!cache || p.some((v, k) => v.rho !== cache.rho[k])) {
+            const W = new Float64Array(16 * nc),
+              K = new Float64Array(16 * nc),
+              l = new Float64Array(4 * nc),
+              tr = new Float64Array(4 * nc);
+            for (let c = 0; c < nc; c++) {
+              const mat = this.materials[m.cells[c].m],
+                h = mat.hall * B,
+                mr = 1 + mat.magnetoresistance * B * B,
+                o = 4 * c;
+              for (let i = 0; i < 4; i++) {
+                const r = p[G.links[o + i]].rho * mr,
+                  D = r * r + h * h;
+                l[o + i] = G.A[o + i] * r / D;
+                tr[o + i] = G.A[o + i] * h / D;
+              }
+              setTensorWeights(W, c, l[o], l[o + 1], l[o + 2], l[o + 3], tr[o], tr[o + 1], tr[o + 2], tr[o + 3]);
+              addCellMatrix(W, G.L, c, K);
+            }
+            const fixed = new Map();
+            this.source.forEach(i => fixed.set(i, 0));
+            this.sink.forEach(i => fixed.set(i, 0));
+            cache = this.electricCache = {rho: p.map(v => v.rho), W, l, tr, solve: TE.cellSystem(m, K, zero, fixed)};
+          }
+          const {W, l: lw, tr: tw} = cache;
+          for (let c = 0; c < nc; c++) {
+            const NB = this.materials[m.cells[c].m].nernst * B,
+              o = 4 * c,
+              l = [lw[o], lw[o + 1], lw[o + 2], lw[o + 3]],
+              tr = [tw[o], tw[o + 1], tw[o + 2], tw[o + 3]],
+              s = [0, 0, 0, 0];
+            for (let i = 0; i < 4; i++) {
+              const k = G.links[o + i],
+                link = m.links[k];
+              s[i] = p[k].alpha * (T[link.b] - T[link.a]) / G.L[o + i]; // Seebeck EMF per length
+            }
+            const Ta = T[G.nodes[o]],
+              Tb = T[G.nodes[o + 1]],
+              Tc = T[G.nodes[o + 2]],
+              Td = T[G.nodes[o + 3]],
+              gx = (Tb - Ta + Td - Tc) / (2 * m.dx),
+              gy = (Tc - Ta + Td - Tb) / (2 * m.dy),
+              nernst = [l[0] * NB * gy - tr[0] * NB * gx, l[1] * NB * gy - tr[1] * NB * gx, -l[2] * NB * gx - tr[2] * NB * gy, -l[3] * NB * gx - tr[3] * NB * gy];
+            for (let k = 0; k < 4; k++) {
+              const w = 16 * c + 4 * k,
+                f = nernst[k] - (W[w] * s[0] + W[w + 1] * s[1] + W[w + 2] * s[2] + W[w + 3] * s[3]);
+              flow0[o + k] = f; // link current at zero potential: Seebeck and Nernst EMFs
+              src[G.nodes[o + LINK_NODES[k][0]]] += f;
+              src[G.nodes[o + LINK_NODES[k][1]]] -= f;
+            }
+          }
+          const fixed = new Map();
+          this.source.forEach(i => fixed.set(i, 0));
+          this.sink.forEach(i => fixed.set(i, 0));
+          const base = cache.solve(src.map(v => -v), fixed);
+          this.source.forEach(i => fixed.set(i, 1));
+          const unit = cache.solve(zero, fixed),
+            Ibase = cellFlows(G, W, base, flow0),
+            Ihom = cellFlows(G, W, unit);
+          let Iunit = 0,
+            IbaseTotal = 0;
+          m.links.forEach((l, k) => {
+            const du = unit[l.a] - unit[l.b];
+            Iunit += Ihom[k] * du;
+            IbaseTotal += Ibase[k] * du;
+          });
+          TE.assert(Iunit > 0 && Number.isFinite(Iunit) && Number.isFinite(IbaseTotal), 'Electrodes have no conducting connection.');
+          let terminalVoltage;
+          if (e.kind === 'voltage') terminalVoltage = TE.signal2D(e.value, t, this.frequency);else {
+            const target = e.kind === 'open_circuit' ? 0 : TE.signal2D(e.value, t, this.frequency);
+            terminalVoltage = (target - IbaseTotal) / Iunit;
+          }
+          const V = base.map((v, i) => v + terminalVoltage * unit[i]);
+          TE.assert(V.every(Number.isFinite), 'Voltage exceeds the finite numerical range. Check excitation and material values.');
+          V.forEach(v => TE.checkRange(v, 'voltage'));
+          const I = Ibase.map((v, k) => v + terminalVoltage * Ihom[k]),
+            terminalCurrent = IbaseTotal + terminalVoltage * Iunit;
+          TE.checkRange(terminalCurrent, 'current');
+          TE.assert(I.every(Number.isFinite) && Number.isFinite(terminalCurrent) && Number.isFinite(terminalVoltage), 'Current or terminal voltage exceeds the finite numerical range.');
+          return {
+            V,
+            I,
+            terminalVoltage,
+            current: terminalCurrent
+          };
+        }
+        // Heat flow a→b along each link by conduction. In a field, the Righi–Leduc (thermal Hall) term
+        // q = −κ(I − S·B·R)∇T couples each link to the transverse links of its cell.
+        conductionFlows(T, p) {
+          if (!this.righiLeducActive) return this.mesh.links.map((e, k) => p[k].k * (T[e.a] - T[e.b]));
+          return cellFlows(this.cellGeometry, this.thermalWeights(p), T);
+        }
+        thermalWeights(p) {
+          const m = this.mesh,
+            G = this.cellGeometry,
+            nc = m.cells.length,
+            W = new Float64Array(16 * nc);
+          for (let c = 0; c < nc; c++) {
+            const SB = this.materials[m.cells[c].m].righiLeduc * this.B,
+              o = 4 * c,
+              l = [0, 1, 2, 3].map(i => G.A[o + i] * p[G.links[o + i]].kappa);
+            setTensorWeights(W, c, l[0], l[1], l[2], l[3], l[0] * SB, l[1] * SB, l[2] * SB, l[3] * SB);
+          }
+          return W;
+        }
+        // Thermal linear solve: conjugate gradients for the symmetric 2D operator, banded LU with Righi–Leduc.
+        thermalSolve(p, diag, rhs, fixed, initial, rtol) {
+          const m = this.mesh;
+          if (!this.righiLeducActive) return TE.graphSolve(m, p.map(v => v.k), diag, rhs, fixed, {
+            initial,
+            rtol
+          });
+          const W = this.thermalWeights(p),
+            K = new Float64Array(16 * m.cells.length);
+          for (let c = 0; c < m.cells.length; c++) addCellMatrix(W, this.cellGeometry.L, c, K);
+          return TE.cellSystem(m, K, diag, fixed)(rhs, fixed);
+        }
+        balance(T, t) {
+          const m = this.mesh,
+            {
+              p,
+              cap
+            } = this.properties(T),
+            elect = this.electric(T, p, t),
+            source = Array(m.n).fill(0),
+            peltier = Array(m.n).fill(0),
+            q = [],
+            work = [];
+          m.links.forEach((l, k) => {
+            const I = elect.I[k],
+              P = I * (elect.V[l.a] - elect.V[l.b]),
+              pel = p[k].alpha * (T[l.a] + T[l.b]) / 2 * I;
+            TE.checkRange(P, 'power');
+            TE.checkRange(pel, 'power');
+            TE.assert([I, P, pel].every(Number.isFinite), 'Electrical/thermal power exceeds the finite numerical range.');
+            source[l.a] += -pel + P / 2;
+            source[l.b] += pel + P / 2;
+            // With P = I²/g + αI(Tb − Ta), the link adds −αI·Ta + I²/2g to node a and +αI·Tb + I²/2g
+            // to node b: every node source is −T_i·peltier_i + Joule, exactly (Peltier and Thomson).
+            peltier[l.a] += p[k].alpha * I;
+            peltier[l.b] -= p[k].alpha * I;
+            q.push(pel - p[k].k * (T[l.b] - T[l.a]));
+            work.push(P);
+          });
+          if (this.nernstActive || this.righiLeducActive) this.magneticHeat(T, p, elect.I, source, q);
+          TE.assert([...source, ...q, ...work].every(Number.isFinite), 'Heat balance exceeds the finite numerical range.');
+          return {
+            p,
+            cap,
+            ...elect,
+            source,
+            peltier,
+            q,
+            work
+          };
+        }
+        // Ettingshausen transport q = T·N·B·(ẑ × J), from the Peltier tensor Π = T·ε̂ (Onsager), and the
+        // Righi–Leduc part of conduction in the link heat flows q. Heat moves along links from node to node,
+        // so the global energy balance stays exact; the Ettingshausen part enters the node sources.
+        magneticHeat(T, p, I, source, q) {
+          const m = this.mesh;
+          if (this.righiLeducActive) {
+            const flows = this.conductionFlows(T, p);
+            m.links.forEach((e, k) => q[k] += flows[k] + p[k].k * (T[e.b] - T[e.a]));
+          }
+          if (this.nernstActive) m.cells.forEach(cell => {
+            const NB = this.materials[cell.m].nernst * this.B;
+            if (NB === 0) return;
+            const [k0, k1, k2, k3] = cell.links,
+              Jx = (I[k0] + I[k1]) / (m.dy * m.depth),
+              Jy = (I[k2] + I[k3]) / (m.dx * m.depth);
+            cell.links.forEach((k, i) => {
+              const e = m.links[k],
+                Tm = (T[e.a] + T[e.b]) / 2,
+                ett = i < 2 ? -e.A * Tm * NB * Jy : e.A * Tm * NB * Jx;
+              TE.checkRange(ett, 'power');
+              source[e.a] -= ett;
+              source[e.b] += ett;
+              q[k] += ett;
+            });
+          });
+        }
+        initial(T0) {
+          let T = T0 ? [...T0] : Array(this.mesh.n).fill(300);
+          TE.assert(T.length === this.mesh.n, 'T0 length mismatch.');
+          for (const [i, v] of this.thermal(0).fixed) T[i] = v;
+          this.properties(T);
+          return T;
+        }
+        heatResidual(T, t, target, gammaDt, atol = 1e-9, rtol = 1e-7) {
+          const b = this.balance(T, t),
+            bc = this.thermal(t),
+            m = this.mesh;
+          // Reused by the next time step, which starts from this exact state and time.
+          this.lastBalance = {
+            T,
+            t,
+            current: b.current,
+            terminalVoltage: b.terminalVoltage
+          };
+          const residual = b.source.map((v, i) => v + bc.rhs[i] - bc.diag[i] * T[i] - (gammaDt ? b.cap[i] * (T[i] - target[i]) / gammaDt : 0));
+          const scale = b.source.map((v, i) => Math.abs(v) + Math.abs(bc.rhs[i] - bc.diag[i] * T[i]) + (gammaDt ? Math.abs(b.cap[i] * (T[i] - target[i]) / gammaDt) : 0));
+          const flows = this.righiLeducActive ? this.conductionFlows(T, b.p) : null;
+          m.links.forEach((e, k) => {
+            const q = flows ? flows[k] : b.p[k].k * (T[e.a] - T[e.b]);
+            residual[e.a] -= q;
+            residual[e.b] += q;
+            scale[e.a] += Math.abs(q);
+            scale[e.b] += Math.abs(q);
+          });
+          let normalized = 0,
+            watts = 0;
+          for (let i = 0; i < m.n; i++) if (!bc.fixed.has(i)) {
+            watts = Math.max(watts, Math.abs(residual[i]));
+            normalized = Math.max(normalized, Math.abs(residual[i]) / (atol + rtol * scale[i]));
+          }
+          TE.assert(Number.isFinite(normalized), 'Nonfinite heat-balance residual.');
+          return {
+            normalized,
+            watts
+          };
+        }
+        // Damping caps the Picard contraction at (1 − relaxation) per iteration: about 10 iterations
+        // per step at 0.85, versus 2–3 undamped. Acceptance tests are identical, so the damped
+        // iteration is only a fallback, used when the undamped one fails or stops contracting.
+        // After repeated failures the solver stays damped for the rest of the run.
+        implicit(t, target, gammaDt, options = {}) {
+          if (options.relaxation === undefined && this.undampedFailures < 3) {
+            try {
+              return this.picard(t, target, gammaDt, {
+                ...options,
+                relaxation: 1,
+                abortOnStall: true
+              });
+            } catch {
+              this.undampedFailures++;
+            }
+          }
+          return this.picard(t, target, gammaDt, options);
+        }
+        picard(t, target, gammaDt, {
+          initial,
+          tolerance = 2e-9,
+          maxIterations = 100,
+          relaxation = .85,
+          residualAtol = 1e-9,
+          residualRtol = 1e-7,
+          abortOnStall = false
+        } = {}) {
+          TE.assert(Number.isFinite(tolerance) && tolerance > 0, 'Nonlinear tolerance must be positive.');
+          TE.assert(Number.isInteger(maxIterations) && maxIterations >= 1, 'Nonlinear iteration limit must be a positive integer.');
+          TE.assert(Number.isFinite(relaxation) && relaxation > 0 && relaxation <= 1, 'Relaxation must satisfy 0 < value <= 1.');
+          TE.assert([residualAtol, residualRtol].every(v => Number.isFinite(v) && v > 0), 'Heat residual tolerances must be positive and finite.');
+          const m = this.mesh,
+            bc = this.thermal(t);
+          let T = [...initial],
+            error = Infinity,
+            stalls = 0,
+            linearRtol = 2e-12,
+            lastResidual = null;
+          for (const [i, v] of bc.fixed) T[i] = v;
+          for (let iteration = 0; iteration < maxIterations; iteration++) {
+            // Semi-implicit Peltier: a node source −T·c with c > 0 (Peltier cooling) is moved to the
+            // diagonal by adding c·T to both sides. The fixed point, the SPD matrix and the acceptance
+            // test are unchanged; a lagged cooling term would make Picard oscillate at high current.
+            const b = this.balance(T, t),
+              implicitPeltier = b.peltier.map(v => v > 0 ? v : 0),
+              diag = bc.diag.map((v, i) => v + implicitPeltier[i] + (gammaDt ? b.cap[i] / gammaDt : 0)),
+              rhs = b.source.map((v, i) => v + implicitPeltier[i] * T[i] + bc.rhs[i] + (gammaDt ? b.cap[i] / gammaDt * target[i] : 0));
+            const candidate = this.thermalSolve(b.p, diag, rhs, bc.fixed, T, linearRtol);
+            const previousError = error;
+            error = Math.max(...candidate.map((v, i) => Math.abs(v - T[i])));
+            stalls = error > tolerance && error >= previousError ? stalls + 1 : 0;
+            TE.assert(!abortOnStall || stalls < 2, 'Picard iteration is not contracting.');
+            TE.assert(candidate.every(v => Number.isFinite(v) && v > 0), 'Nonphysical temperature. Check excitation and material laws.');
+            candidate.forEach(v => TE.checkRange(v, 'temperature'));
+            if (error <= tolerance) {
+              const residual = this.heatResidual(candidate, t, target, gammaDt, residualAtol, residualRtol);
+              this.lastNonlinearDiagnostics = {
+                iterations: iteration + 1,
+                updateKelvin: error,
+                heatResidualWatts: residual.watts,
+                heatResidualNormalized: residual.normalized
+              };
+              if (residual.normalized <= 1) return candidate;
+              // The update has converged but the heat balance has not. With small time steps the CG
+              // tolerance, relative to capacity × absolute temperature, is looser than the balance
+              // test, and the warm-started solve would return the same state. Tighten it.
+              lastResidual = residual.normalized;
+              linearRtol = Math.max(linearRtol / 100, 1e-16);
+            }
+            T = candidate.map((v, i) => bc.fixed.has(i) ? v : T[i] + relaxation * (v - T[i]));
+          }
+          throw new Error(`Nonlinear thermal iteration failed (update ${error.toExponential(2)} K${lastResidual === null ? '' : `, heat-balance residual ${lastResidual.toExponential(2)}`}). ${gammaDt ? 'Reduce the excitation or use more time steps per period.' : 'Reduce the excitation or check the material laws.'}`);
+        }
+        snapshot(T, t = 0, steady = false) {
+          const m = this.mesh,
+            b = this.balance(T, t),
+            Jx = [],
+            Jy = [],
+            qx = [],
+            qy = [];
+          m.cells.forEach(c => {
+            const [a, bb, cc, d] = c.links;
+            Jx.push((b.I[a] + b.I[bb]) / (m.dy * m.depth));
+            Jy.push((b.I[cc] + b.I[d]) / (m.dx * m.depth));
+            qx.push((b.q[a] + b.q[bb]) / (m.dy * m.depth));
+            qy.push((b.q[cc] + b.q[d]) / (m.dx * m.depth));
+          });
+          for (const [key, values] of Object.entries({
+            Jx,
+            Jy,
+            qx,
+            qy
+          })) values.forEach(v => TE.checkRange(v, key));
+          const bc = this.thermal(t),
+            res = b.source.map((v, i) => v + bc.rhs[i] - bc.diag[i] * T[i]);
+          const flows = this.righiLeducActive ? this.conductionFlows(T, b.p) : null;
+          m.links.forEach((e, k) => {
+            const v = flows ? flows[k] : b.p[k].k * (T[e.a] - T[e.b]);
+            res[e.a] -= v;
+            res[e.b] += v;
+          });
+          let heatOut = 0;
+          for (const [side, faces] of Object.entries(m.sides)) {
+            const c = this.boundaries[side],
+              v = TE.signal2D(c.value, t, this.frequency);
+            if (c.kind !== 'temperature') for (const {
+              node,
+              A
+            } of faces) heatOut += A * (c.kind === 'flux' ? v : (c.h ?? 0) * (T[node] - v));
+          }
+          for (const [i] of bc.fixed) heatOut += res[i];
+          const electricalPower = b.current * b.terminalVoltage;
+          TE.checkRange(electricalPower, 'power');
+          TE.assert([...Jx, ...Jy, ...qx, ...qy, electricalPower, heatOut, ...res].every(Number.isFinite), 'Derived current density, heat flux or power exceeds the finite numerical range.');
+          return {
+            temperature: [...T],
+            voltage: b.V,
+            Jx,
+            Jy,
+            qx,
+            qy,
+            current: b.current,
+            terminalVoltage: b.terminalVoltage,
+            electricalPower,
+            energyResidual: steady ? heatOut - electricalPower : null,
+            freeResidualWatts: Math.max(0, ...res.filter((_, i) => !bc.fixed.has(i)).map(Math.abs))
+          };
+        }
+        solveSteady(options = {}) {
+          this.frequency = 0;
+          TE.assert(Object.values(this.boundaries).some(b => b.kind === 'temperature' || b.kind === 'convection' && b.h > 0), 'Steady state requires a thermal anchor.');
+          const T = this.implicit(0, null, 0, {
+            ...options,
+            initial: this.initial(options.T0)
+          });
+          return {
+            ...this.snapshot(T, 0, true),
+            diagnostics: {
+              ...this.lastNonlinearDiagnostics
+            },
+            method: 'steady',
+            converged: true
+          };
+        }
+        solvePeriodic(frequency, {
+          samples = 128,
+          maxPeriods = 100,
+          minPeriods = 3,
+          periodicAtol = 2e-7,
+          periodicRtol = 1e-10,
+          tolerance = 2e-9,
+          harmonicVoltageAtol = null,
+          harmonicCurrentAtol = 1e-10,
+          harmonicRtol = 1e-6,
+          extrapolate = true,
+          checkpointEvery = 5,
+          checkpointIntervalMs = 1000,
+          T0,
+          onProgress = () => {},
+          onCheckpoint
+        } = {}) {
+          TE.assert(Number.isFinite(frequency) && frequency > 0, 'Frequency must be positive.');
+          TE.assert(Number.isInteger(samples) && samples >= 32 && samples <= 2048, 'Use 32–2048 integer steps per period.');
+          TE.assert(Number.isInteger(maxPeriods) && maxPeriods <= 1000 && Number.isInteger(minPeriods) && maxPeriods >= minPeriods && minPeriods >= 2, 'Invalid cycle limit.');
+          TE.assert([periodicAtol, periodicRtol, tolerance, harmonicCurrentAtol, harmonicRtol].every(v => Number.isFinite(v) && v > 0) && (harmonicVoltageAtol === null || Number.isFinite(harmonicVoltageAtol) && harmonicVoltageAtol > 0), 'Solver tolerances must be positive and finite.');
+          TE.assert(Number.isInteger(checkpointEvery) && checkpointEvery >= 1 && Number.isFinite(checkpointIntervalMs) && checkpointIntervalMs >= 0, 'Invalid checkpoint cadence.');
+          TE.assert(Number.isFinite(1 / (frequency * samples)) && 1 / (frequency * samples) > 0, 'Unrepresentable time step.');
+          TE.assert(TE.estimateRetainedBytes({
+            nx: this.mesh.nx,
+            ny: this.mesh.ny,
+            samples
+          }) <= TE.retainedMemoryLimit, 'Periodic retained data exceeds the 256 MiB estimate. Reduce mesh size or time steps.');
+          this.frequency = frequency;
+          let T = this.initial(T0),
+            older = null,
+            previous = null,
+            previousTerminal = null,
+            history,
+            terminal,
+            cycle,
+            error = Infinity;
+          let temperatureError = Infinity,
+            harmonicError = Infinity,
+            lastCheckpoint = 0,
+            packageMs = 0,
+            maxHeatResidual = 0,
+            maxHeatResidualWatts = 0,
+            cycleStarts = [],
+            extrapolations = 0;
+          const dt = 1 / (frequency * samples);
+          // Keep the voltage test consistent with the temperature test: a cycle-to-cycle temperature
+          // change of periodicAtol across the strongest Seebeck coefficient moves the terminal voltage
+          // by about αmax·periodicAtol. A much stricter voltage tolerance would set the cycle count
+          // through the slowly settling DC Seebeck offset, long after 1ω had converged.
+          const alphaMax = this.properties(T).p.reduce((s, v) => Math.max(s, Math.abs(v.alpha)), 0);
+          harmonicVoltageAtol = harmonicVoltageAtol ?? Math.max(1e-12, alphaMax * periodicAtol);
+          const packageCycle = converged => {
+            const traces = {
+              temperature: history,
+              voltage: [],
+              Jx: [],
+              Jy: [],
+              qx: [],
+              qy: [],
+              current: terminal.current,
+              terminalVoltage: terminal.terminalVoltage
+            };
+            // Build retained fields directly; avoid a second full array of snapshot objects.
+            for (let i = 0; i < samples; i++) {
+              const record = this.snapshot(history[i], ((cycle - 1) * samples + i) * dt);
+              for (const key of ['voltage', 'Jx', 'Jy', 'qx', 'qy']) traces[key].push(record[key]);
+            }
+            const harmonics = {};
+            for (const [key, value] of Object.entries(traces)) harmonics[key] = TE.extractHarmonics(value, 3);
+            return {
+              ...traces,
+              harmonics,
+              time: Array.from({
+                length: samples
+              }, (_, i) => i * dt),
+              frequency,
+              samples,
+              periods: cycle,
+              cycleStartTime: (cycle - 1) / frequency,
+              periodicError: Number.isFinite(error) ? error : null,
+              finalTemperature: [...T],
+              method: 'BDF2 / nonlinear Picard / matrix-free CG',
+              converged,
+              diagnostics: {
+                temperatureCycleError: Number.isFinite(temperatureError) ? temperatureError : null,
+                terminalHarmonicError: Number.isFinite(harmonicError) ? harmonicError : null,
+                heatResidualNormalized: maxHeatResidual,
+                heatResidualWatts: maxHeatResidualWatts,
+                harmonicVoltageAtol,
+                harmonicCurrentAtol,
+                harmonicRtol,
+                cycleExtrapolations: extrapolations
+              }
+            };
+          };
+          for (cycle = 1; cycle <= maxPeriods; cycle++) {
+            history = [];
+            terminal = {
+              current: [],
+              terminalVoltage: []
+            };
+            maxHeatResidual = 0;
+            maxHeatResidualWatts = 0;
+            for (let j = 0; j < samples; j++) {
+              history.push([...T]);
+              const time = ((cycle - 1) * samples + j) * dt;
+              const cached = this.lastBalance,
+                electrical = cached && cached.T === T && cached.t === time ? cached : this.electric(T, this.properties(T).p, time);
+              terminal.current.push(electrical.current);
+              terminal.terminalVoltage.push(electrical.terminalVoltage);
+              const target = T.map((v, i) => older ? 4 * v / 3 - older[i] / 3 : v),
+                gamma = older ? 2 / 3 : 1;
+              const next = this.implicit(((cycle - 1) * samples + j + 1) * dt, target, gamma * dt, {
+                initial: T,
+                tolerance
+              });
+              older = T;
+              T = next;
+              maxHeatResidual = Math.max(maxHeatResidual, this.lastNonlinearDiagnostics.heatResidualNormalized);
+              maxHeatResidualWatts = Math.max(maxHeatResidualWatts, this.lastNonlinearDiagnostics.heatResidualWatts);
+              if (j % Math.max(1, Math.floor(samples / 20)) === 0 || j === samples - 1) onProgress({
+                cycle,
+                maxPeriods,
+                step: j + 1,
+                samples,
+                error: Number.isFinite(error) ? error : null
+              });
+            }
+            const terminalHarmonics = {
+              current: TE.extractHarmonics(terminal.current),
+              terminalVoltage: TE.extractHarmonics(terminal.terminalVoltage)
+            };
+            if (previous) {
+              temperatureError = 0;
+              history.forEach((row, j) => row.forEach((v, i) => temperatureError = Math.max(temperatureError, Math.abs(v - previous[j][i]) / (periodicAtol + periodicRtol * Math.max(Math.abs(v), Math.abs(previous[j][i]))))));
+              harmonicError = 0;
+              for (const key of ['current', 'terminalVoltage']) for (let n = 0; n <= 3; n++) {
+                const a = terminalHarmonics[key][n],
+                  b = previousTerminal[key][n],
+                  atol = key === 'current' ? harmonicCurrentAtol : harmonicVoltageAtol;
+                harmonicError = Math.max(harmonicError, Math.hypot(a.re - b.re, a.im - b.im) / (atol + harmonicRtol * Math.max(Math.hypot(a.re, a.im), Math.hypot(b.re, b.im))));
+              }
+              error = Math.max(temperatureError, harmonicError, maxHeatResidual);
+            }
+            onProgress({
+              cycle,
+              maxPeriods,
+              step: samples,
+              samples,
+              error: Number.isFinite(error) ? error : null,
+              temperatureError: Number.isFinite(temperatureError) ? temperatureError : null,
+              harmonicError: Number.isFinite(harmonicError) ? harmonicError : null
+            });
+            if (cycle >= minPeriods && error <= 1) return packageCycle(true);
+            // First and last cycles are always saved. Intermediate checkpoints re-evaluate every sample
+            // and are throttled so packaging stays below about 10% of the run time.
+            const now = Date.now();
+            if (onCheckpoint && (cycle === 1 || cycle === maxPeriods || (cycle % checkpointEvery === 0 || now - lastCheckpoint >= checkpointIntervalMs) && now - lastCheckpoint >= 9 * packageMs)) {
+              onCheckpoint(packageCycle(false));
+              const done = Date.now();
+              packageMs = done - now;
+              lastCheckpoint = done;
+            }
+            previous = history;
+            previousTerminal = terminalHarmonics;
+            // Cycle extrapolation. The approach to the periodic state is dominated by the slowest
+            // thermal mode, so successive cycle-start states differ by d_k ≈ λ·d_(k−1). Jump to the
+            // limit along that mode, then run at least two plain cycles: acceptance still compares
+            // two unextrapolated cycles with unchanged tolerances. Never within the last two cycles.
+            cycleStarts.push(T);
+            if (cycleStarts.length > 3) cycleStarts.shift();
+            if (extrapolate && older && cycleStarts.length === 3 && cycle <= maxPeriods - 2) {
+              const jump = TE.cycleExtrapolation(cycleStarts);
+              let shifted = jump && T.map((v, i) => v + jump.shift[i]);
+              if (shifted) try {
+                this.properties(shifted);
+              } catch {
+                shifted = null; // Outside the operating range or a material law: keep integrating.
+              }
+              if (shifted) {
+                T = shifted;
+                older = older.map((v, i) => v + jump.shift[i]);
+                previous = null;
+                previousTerminal = null;
+                cycleStarts = [];
+                error = temperatureError = harmonicError = Infinity;
+                extrapolations++;
+              }
+            }
+          }
+          const failure = new Error(`Periodic state not reached in ${maxPeriods} cycles (combined error ${error.toExponential(2)}).`);
+          failure.unconverged = true;
+          throw failure;
+        }
+      }
+      TE.Solver2D = Solver2D;
+    })(globalThis.TE);
+
+    /* Conservative retained-data budget, separate from temporary export memory. */
+    (function (TE) {
+      TE.retainedMemoryLimit = 256 * 1024 * 1024;
+      TE.estimateRetainedBytes = (c, points = 1) => points * c.samples * (2 * (c.nx + 1) * (c.ny + 1) + 4 * c.nx * c.ny) * 32;
+    })(globalThis.TE);
+
+    /* Shared validation for UI, JSON import and worker. Errors retain field paths. */
+    (function (TE) {
+      TE.validate2DConfig = c => {
+        const errors = [],
+          add = (path, message) => errors.push({
+            path,
+            message
+          });
+        const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+        const finite = (v, p) => {
+          if (typeof v !== 'number' || !Number.isFinite(v)) {
+            add(p, 'Must be a finite number.');
+            return false;
+          }
+          return true;
+        };
+        const positive = (v, p) => {
+          if (!finite(v, p)) return false;
+          if (v <= 0) {
+            add(p, 'Must be strictly positive (greater than zero).');
+            return false;
+          }
+          return true;
+        };
+        const integer = (v, p, min, max = Infinity) => {
+          if (!finite(v, p)) return false;
+          if (!Number.isInteger(v) || v < min || v > max) {
+            add(p, `Must be an integer from ${min}${max === Infinity ? ' upward' : ' to ' + max}.`);
+            return false;
+          }
+          return true;
+        };
+        if (!object(c)) return [{
+          path: 'model',
+          message: 'The model must be a JSON object.'
+        }];
+        if (!['steady', 'periodic'].includes(c.mode)) add('mode', 'Select steady or periodic mode.');
+        const periodic = c.mode === 'periodic';
+        // Magnetic field Bz (T), perpendicular to the plane; absent means 0.
+        const field = c.magneticField === undefined ? 0 : c.magneticField;
+        if (finite(field, 'magneticField') && Math.abs(field) > 100) add('magneticField', 'Use a field between −100 and 100 T.');
+        const nxOK = integer(c.nx, 'nx', 2),
+          nyOK = integer(c.ny, 'ny', 1);
+        if (nxOK && nyOK && (c.nx + 1) * (c.ny + 1) > 1600) {
+          add('nx', 'The mesh may contain at most 1600 nodes.');
+          add('ny', 'Reduce Nx or Ny to stay at or below 1600 nodes.');
+        }
+        const lxOK = positive(c.lx, 'lx'),
+          lyOK = positive(c.ly, 'ly'),
+          depthOK = positive(c.depth, 'depth');
+        if (nxOK && nyOK && lxOK && lyOK && depthOK) {
+          const dx = c.lx / c.nx,
+            dy = c.ly / c.ny;
+          for (const v of [dx, dy, dx * dy * c.depth / 4, dx * c.depth / 2, dy * c.depth / 2, c.lx * c.ly * c.depth]) if (!Number.isFinite(v) || v <= 0) {
+            add('depth', 'Dimensions produce zero or overflowing cell volumes/areas. Use numerically representable dimensions.');
+            break;
+          }
+        }
+        if (finite(c.frequency, 'frequency') && (periodic ? c.frequency <= 0 : c.frequency < 0)) add('frequency', periodic ? 'Frequency must be strictly positive for a periodic run.' : 'Frequency cannot be negative.');
+        const samplesOK = integer(c.samples, 'samples', 32, 2048);
+        if (periodic && nxOK && nyOK && samplesOK && TE.estimateRetainedBytes(c) > TE.retainedMemoryLimit) add('samples', 'Periodic retained data exceeds the 256 MiB estimate. Reduce mesh size or time steps.');
+        integer(c.maxPeriods, 'maxPeriods', 3, 1000);
+        if (periodic && Number.isFinite(c.frequency) && c.frequency > 0 && samplesOK) {
+          const dt = 1 / (c.frequency * c.samples);
+          if (!Number.isFinite(dt) || dt <= 0) add('frequency', 'The frequency and step count produce an unrepresentable time step.');
+        }
+        function signal(s, path) {
+          if (typeof s === 'number') {
+            finite(s, path + '.bias');
+            return {
+              bias: s,
+              amplitude: 0,
+              phase: 0
+            };
+          }
+          if (!object(s)) {
+            add(path, 'Use a finite scalar or a bias/amplitude/phase object.');
+            return null;
+          }
+          const p = {
+            bias: s.bias ?? 0,
+            amplitude: s.amplitude ?? 0,
+            phase: s.phase ?? 0
+          };
+          for (const k of Object.keys(p)) if (s[k] === null) {
+            add(path + '.' + k, 'Null is not a number.');
+            p[k] = NaN;
+          } else finite(p[k], path + '.' + k);
+          if (Number.isFinite(p.bias) && Number.isFinite(p.amplitude) && (!Number.isFinite(p.bias + Math.abs(p.amplitude)) || !Number.isFinite(p.bias - Math.abs(p.amplitude)))) add(path + '.amplitude', 'Bias and amplitude overflow the representable signal range.');
+          return p;
+        }
+        const probeTemperatures = new Set([300]),
+          thermalSignals = {};
+        if (!object(c.thermal)) add('thermal', 'Define all four thermal boundaries.');
+        else for (const side of Object.keys(c.thermal)) if (!['left', 'right', 'bottom', 'top'].includes(side)) add('thermal', 'Unknown thermal boundary: ' + side);
+        for (const side of ['left', 'right', 'bottom', 'top']) {
+          const b = c.thermal?.[side],
+            p = 'thermal.' + side;
+          if (!object(b)) {
+            add(p, 'Define this thermal boundary.');
+            continue;
+          }
+          if (!['temperature', 'flux', 'convection'].includes(b.kind)) add(p + '.kind', 'Unknown thermal condition.');
+          const s = signal(b.value, p + '.value');
+          thermalSignals[side] = s;
+          const h = b.h === undefined ? 0 : b.h;
+          if (finite(h, p + '.h') && h < 0) add(p + '.h', 'Convection h must be nonnegative.');
+          if (s && ['temperature', 'convection'].includes(b.kind) && Object.values(s).every(Number.isFinite)) {
+            const low = s.bias - (periodic ? Math.abs(s.amplitude) : 0),
+              high = s.bias + (periodic ? Math.abs(s.amplitude) : 0);
+            if (low <= 0 || !Number.isFinite(high)) {
+              const msg = periodic ? 'Temperature must stay above 0 K for the entire cycle: DC > |AC peak|.' : 'Absolute temperature must be strictly greater than 0 K.';
+              add(p + '.value.bias', msg);
+              if (periodic) add(p + '.value.amplitude', msg);
+            } else {
+              probeTemperatures.add(low);
+              probeTemperatures.add(high);
+            }
+          }
+        }
+        // Compare whole prescribed waveforms at shared Dirichlet corners, not only t=0.
+        for (const [a, b] of [['left', 'bottom'], ['left', 'top'], ['right', 'bottom'], ['right', 'top']]) {
+          if (c.thermal?.[a]?.kind !== 'temperature' || c.thermal?.[b]?.kind !== 'temperature') continue;
+          const x = thermalSignals[a],
+            y = thermalSignals[b];
+          if (!x || !y || ![...Object.values(x), ...Object.values(y)].every(Number.isFinite)) continue;
+          const phasor = s => [s.bias, periodic ? s.amplitude * Math.cos(TE.phaseRadians(s.phase)) : 0, periodic ? s.amplitude * Math.sin(TE.phaseRadians(s.phase)) : 0];
+          const X = phasor(x),
+            Y = phasor(y);
+          if (X.some((v, i) => Math.abs(v - Y[i]) > 1e-8)) {
+            add(`thermal.${a}.value.bias`, `Temperature waveforms conflict at the ${a}/${b} corner.`);
+            add(`thermal.${b}.value.bias`, `Temperature waveforms conflict at the ${a}/${b} corner.`);
+          }
+        }
+        if (c.mode === 'steady' && object(c.thermal) && !Object.values(c.thermal).some(b => b?.kind === 'temperature' || b?.kind === 'convection' && Number.isFinite(b.h) && b.h > 0)) add('thermal', 'A steady problem needs a thermal anchor: an imposed temperature or convection with h > 0.');
+        const mats = c.materials;
+        if (!Array.isArray(mats) || mats.length < 1 || mats.length > 12) add('materials', 'Define between 1 and 12 materials.');else mats.forEach((m, i) => {
+          const p = `materials.${i}`;
+          if (!object(m)) {
+            add(p, 'Invalid material definition.');
+            return;
+          }
+          if (m.name !== undefined && (typeof m.name !== 'string' || !m.name.trim())) add(p + '.name', 'Material name cannot be empty.');
+          function law(value, path, isPositive) {
+            if (typeof value === 'number') {
+              if (isPositive) positive(value, path);else finite(value, path);
+              return;
+            }
+            if (typeof value === 'function') return; // Supported only through the source/API, never through JSON eval.
+            if (!object(value) || !['linear', 'inverseLinear'].includes(value.type)) {
+              add(path, 'Use a number or a supported temperature-dependent law.');
+              return;
+            }
+            finite(value.value, path);
+            if (value.slope !== undefined) finite(value.slope, path);
+            if (value.reference !== undefined) positive(value.reference, path);
+          }
+          for (const k of ['rho', 'Cp', 'k', 'sigma', 'alpha']) law(m[k], p + '.' + k, k !== 'alpha');
+          for (const k of ['beta', 'alphaSlope', 'hall', 'nernst', 'righiLeduc', 'magnetoresistance']) if (m[k] !== undefined) finite(m[k], p + '.' + k);
+          if (typeof m.magnetoresistance === 'number' && Number.isFinite(field) && !(1 + m.magnetoresistance * field * field > 0)) add(p + '.magnetoresistance', 'Resistivity must stay positive in the field: 1 + m·B² > 0.');
+          // Catch inadmissible laws at the reference, initial and prescribed extreme temperatures.
+          for (const key of ['rho', 'Cp', 'k', 'sigma', 'alpha']) {
+            if (errors.some(e => e.path === p + '.' + key)) continue;
+            let prop = m[key];
+            if (key === 'sigma' && typeof prop === 'number') prop = {
+              type: 'inverseLinear',
+              value: prop,
+              slope: m.beta ?? 0,
+              reference: 300
+            };
+            if (key === 'alpha' && typeof prop === 'number') prop = {
+              type: 'linear',
+              value: prop,
+              slope: m.alphaSlope ?? 0,
+              reference: 300
+            };
+            for (const T of probeTemperatures) {
+              try {
+                const v = TE.law(prop, T);
+                if (!Number.isFinite(v) || key !== 'alpha' && v <= 0) throw new Error();
+              } catch {
+                add(p + '.' + key, `${key} must be ${key === 'alpha' ? 'finite' : 'finite and strictly positive'} at ${T.toPrecision(6)} K. Check its temperature law.`);
+                break;
+              }
+            }
+          }
+          if (!errors.some(e => e.path === p + '.rho' || e.path === p + '.Cp')) for (const T of probeTemperatures) {
+            try {
+              const capacity = TE.law(m.rho, T) * TE.law(m.Cp, T);
+              if (!Number.isFinite(capacity) || capacity <= 0) throw new Error();
+            } catch {
+              add(p + '.Cp', 'Density × heat capacity must be finite and strictly positive.');
+              break;
+            }
+          }
+        });
+        if (!Array.isArray(c.materialMap) || !nxOK || !nyOK || c.materialMap.length !== c.nx * c.ny) add('materialMap', 'Material map must have exactly Nx × Ny cells.');else if (!Array.isArray(mats) || c.materialMap.some(id => !Number.isInteger(id) || id < 0 || id >= mats.length)) add('materialMap', 'Every cell must reference an existing material.');
+        const e = c.electrical,
+          contacts = {};
+        if (!object(e)) add('electrical', 'Define the electrical contacts and control mode.');else {
+          if (!['voltage', 'current', 'open_circuit'].includes(e.kind)) add('electrical.kind', 'Unknown electrical control mode.');
+          signal(e.value, 'electrical.value');
+          for (const name of ['source', 'sink']) {
+            const side = e[name + 'Side'],
+              range = e[name + 'Range'],
+              p = 'electrical.' + name + 'Range';
+            const sideOK = ['left', 'right', 'bottom', 'top'].includes(side);
+            if (!sideOK) add('electrical.' + name + 'Side', 'Select a valid boundary side.');
+            const rangeOK = Array.isArray(range) && range.length === 2 && range.every(v => typeof v === 'number' && Number.isFinite(v)) && range[0] >= 0 && range[1] <= 1 && range[0] < range[1];
+            if (!rangeOK) add(p, 'Electrode range must satisfy 0% ≤ start < end ≤ 100%.');
+            if (sideOK && rangeOK && nxOK && nyOK && (c.nx + 1) * (c.ny + 1) <= 1600) {
+              const count = ['left', 'right'].includes(side) ? c.ny : c.nx,
+                ids = [];
+              for (let k = 0; k <= count; k++) if (k / count >= range[0] - 1e-12 && k / count <= range[1] + 1e-12) ids.push(side === 'left' ? k * (c.nx + 1) : side === 'right' ? k * (c.nx + 1) + c.nx : side === 'bottom' ? k : c.ny * (c.nx + 1) + k);
+              contacts[name] = ids;
+              if (ids.length < 2) add(p, 'Electrode must cover at least two boundary nodes. Enlarge its range or refine the mesh.');
+            }
+          }
+          if (contacts.source && contacts.sink) {
+            const set = new Set(contacts.source);
+            if (contacts.sink.some(n => set.has(n))) {
+              add('electrical.sourceRange', 'Source and sink electrodes overlap at a node.');
+              add('electrical.sinkRange', 'Source and sink electrodes must not overlap.');
+            }
+          }
+          // Each electrode must touch conducting material. Forcing current through a near-insulator next
+          // to good conductors (contrast beyond ~1E15) cannot be resolved in double precision.
+          if (c.hallProbes !== undefined) {
+            const probes = c.hallProbes,
+              ok = name => object(probes?.[name]) && [probes[name].x, probes[name].y].every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1);
+            if (!object(probes)) add('hallProbes', 'Define the Hall voltage probes P+ and P−.');
+            else {
+              for (const name of ['plus', 'minus']) if (!ok(name)) add('hallProbes.' + name, 'Probe coordinates must be between 0 and 100 %.');
+              if (ok('plus') && ok('minus') && nxOK && nyOK) {
+                const node = q => Math.round(q.y * c.ny) * (c.nx + 1) + Math.round(q.x * c.nx);
+                if (node(probes.plus) === node(probes.minus)) add('hallProbes.minus', 'P+ and P− snap to the same node. Move them apart.');
+              }
+            }
+          }
+          if (contacts.source && contacts.sink && Array.isArray(mats) && Array.isArray(c.materialMap) && !errors.some(e => e.path.startsWith('materials') || e.path === 'materialMap')) {
+            const sigma = mats.map(m => {
+              try {
+                const v = typeof m.sigma === 'number' ? m.sigma : TE.law(m.sigma, 300);
+                return Number.isFinite(v) && v > 0 ? v : NaN;
+              } catch {
+                return NaN;
+              }
+            });
+            const best = Math.max(...new Set(c.materialMap.map(id => sigma[id])));
+            for (const name of ['source', 'sink']) {
+              let touching = 0;
+              for (const node of contacts[name]) {
+                const i = node % (c.nx + 1),
+                  j = Math.floor(node / (c.nx + 1));
+                for (const jj of [j - 1, j]) for (const ii of [i - 1, i]) if (ii >= 0 && jj >= 0 && ii < c.nx && jj < c.ny) touching = Math.max(touching, sigma[c.materialMap[jj * c.nx + ii]]);
+              }
+              if (Number.isFinite(best) && touching < 1e-14 * best) add('electrical.' + name + 'Range', `The ${name} electrode touches only near-insulating material (σ ≤ ${touching.toPrecision(3)} S/m, against ${best.toPrecision(3)} S/m elsewhere). Place it on a conductor.`);
+            }
+          }
+        }
+        return errors;
+      };
+      TE.assertValid2DConfig = c => {
+        const issues = TE.validate2DConfig(c);
+        if (issues.length) {
+          const e = new Error(issues.map(v => `${v.path}: ${v.message}`).join('\n'));
+          e.validationIssues = issues;
+          throw e;
+        }
+        return c;
+      };
+    })(globalThis.TE);
+    (function (TE) {
+      // Model file format version, checked when models and projects are imported (3D format).
+      TE.modelVersion = 3;
+      TE.default2D = () => ({
+        version: TE.modelVersion,
+        mode: 'periodic',
+        nx: 12,
+        ny: 8,
+        lx: .002,
+        ly: .001,
+        depth: .001,
+        frequency: 2,
+        samples: 128,
+        maxPeriods: 100,
+        magneticField: 0,
+        hallProbes: {
+          plus: {x: .5, y: 0},
+          minus: {x: .5, y: 1}
+        },
+        materials: [{
+          name: 'Copper',
+          rho: 8960,
+          Cp: 385,
+          k: 400,
+          sigma: 5.8e7,
+          beta: .0039,
+          alpha: 1.5e-6,
+          alphaSlope: 0,
+          color: '#edaf6e'
+        }, {
+          name: 'BiTe',
+          rho: 7700,
+          Cp: 150,
+          k: 1.5,
+          sigma: 1e5,
+          beta: .002,
+          alpha: 2e-4,
+          alphaSlope: 2e-7,
+          color: '#73d8d0'
+        }],
+        materialMap: Array.from({
+          length: 96
+        }, (_, i) => i % 12 < 6 ? 0 : 1),
+        thermal: {
+          left: {
+            kind: 'temperature',
+            value: {
+              bias: 300,
+              amplitude: 0
+            },
+            h: 10000
+          },
+          right: {
+            kind: 'convection',
+            value: {
+              bias: 300,
+              amplitude: 0
+            },
+            h: 10000
+          },
+          bottom: {
+            kind: 'flux',
+            value: {
+              bias: 0,
+              amplitude: 0
+            },
+            h: 1000
+          },
+          top: {
+            kind: 'flux',
+            value: {
+              bias: 0,
+              amplitude: 0
+            },
+            h: 1000
+          }
+        },
+        electrical: {
+          kind: 'current',
+          value: {
+            bias: 0,
+            amplitude: .1,
+            phase: 0
+          },
+          sourceSide: 'left',
+          sinkSide: 'right',
+          sourceRange: [0, 1],
+          sinkRange: [0, 1]
+        }
+      });
+      TE.from2DConfig = c => {
+        TE.assertValid2DConfig(c);
+        TE.assert(['steady', 'periodic'].includes(c.mode), 'Unknown simulation mode.');
+        TE.assert(Array.isArray(c.materials) && c.materials.length > 0, 'Define at least one material.');
+        const mesh = new TE.Mesh2D({
+          nx: c.nx,
+          ny: c.ny,
+          lx: c.lx,
+          ly: c.ly,
+          depth: c.depth,
+          materialMap: c.materialMap
+        });
+        const materials = c.materials.map(m => new TE.ThermoelectricMaterial({
+          ...m,
+          sigma: typeof m.sigma === 'number' ? {
+            type: 'inverseLinear',
+            value: m.sigma,
+            slope: m.beta ?? 0,
+            reference: 300
+          } : m.sigma,
+          alpha: typeof m.alpha === 'number' ? {
+            type: 'linear',
+            value: m.alpha,
+            slope: m.alphaSlope ?? 0,
+            reference: 300
+          } : m.alpha
+        }));
+        const thermal = JSON.parse(JSON.stringify(c.thermal)),
+          electric = JSON.parse(JSON.stringify(c.electrical));
+        if (c.mode === 'steady') {
+          const dc = v => typeof v === 'number' ? v : v.bias ?? 0;
+          for (const b of Object.values(thermal)) b.value = dc(b.value);
+          electric.value = dc(electric.value);
+        }
+        return new TE.Solver2D(mesh, materials, thermal, electric, {
+          magneticField: c.magneticField ?? 0
+        });
+      };
+      TE.run2D = (c, progress, checkpoint) => {
+        const s = TE.from2DConfig(c);
+        const decorate = r => ({
+          ...TE.checkResult(r),
+          config: c,
+          mesh: {
+            nx: c.nx,
+            ny: c.ny,
+            lx: c.lx,
+            ly: c.ly,
+            depth: c.depth,
+            x: s.mesh.x,
+            y: s.mesh.y,
+            materialMap: s.mesh.map
+          },
+          convention: 'Peak phasors: u(t)=U0+Re(sum(Un exp(i n omega t))). Terminal voltage U = V(source)-V(sink), V(sink) = 0; current I enters the source; absorbed power = U*I.'
+        });
+        const r = c.mode === 'steady' ? s.solveSteady() : s.solvePeriodic(c.frequency, {
+          samples: c.samples,
+          maxPeriods: c.maxPeriods,
+          onProgress: progress,
+          onCheckpoint: checkpoint ? r => checkpoint(decorate(r)) : undefined
+        });
+        return decorate(r);
+      };
+    })(globalThis.TE);
+
+    /* Presentation helpers: displayed rounding never replaces an unchanged raw value. */
+    (function (TE) {
+      TE.formatInputNumber = value => {
+        if (!Number.isFinite(value)) return String(value);
+        const rounded = Number(value.toPrecision(10));
+        if (rounded !== 0 && (Math.abs(rounded) >= 1e4 || Math.abs(rounded) < 1e-3)) return rounded.toExponential().replace('e+', 'E').replace('e', 'E');
+        return String(rounded);
+      };
+      TE.setNumberInput = (element, value) => {
+        const display = TE.formatInputNumber(value);
+        element.value = display;
+        element.dataset.rawNumber = String(value);
+        element.dataset.displayNumber = display;
+      };
+      TE.readNumberInput = element => {
+        TE.assert(element.value.trim() !== '', 'A numerical value is required.');
+        const raw = element.dataset.rawNumber;
+        return TE.finite(Number(raw !== undefined && element.value === element.dataset.displayNumber ? raw : element.value), 'Numerical value');
+      };
+      TE.historyForPlot = (result, values) => {
+        const time = result.time.map(v => v * 1000),
+          y = [...values];
+        // Only a converged periodic history may be closed back to its first sample.
+        if (result.converged) {
+          time.push(1000 / result.frequency);
+          y.push(values[0]);
+        }
+        return {
+          time,
+          values: y
+        };
+      };
+      TE.remeshConfig = (config, {
+        nx,
+        ny,
+        lx,
+        ly,
+        depth
+      }) => {
+        // Validate before allocating or mutating the displayed model.
+        TE.assert(Number.isInteger(nx) && Number.isInteger(ny) && nx >= 2 && ny >= 1, 'Element counts must be integers: Nx ≥ 2 and Ny ≥ 1.');
+        TE.assert((nx + 1) * (ny + 1) <= 1600, `Requested mesh: ${nx * ny} elements, ${(nx + 1) * (ny + 1)} nodes. The browser limit is 1600 nodes; reduce Nx or Ny.`);
+        TE.assert([lx, ly, depth].every(v => Number.isFinite(v) && v > 0), 'Dimensions and depth must be positive.');
+        const next = {
+          ...config,
+          nx,
+          ny,
+          lx,
+          ly,
+          depth
+        };
+        next.materialMap = Array.from({
+          length: nx * ny
+        }, (_, k) => {
+          const i = k % nx,
+            j = Math.floor(k / nx),
+            oldI = Math.min(config.nx - 1, Math.floor((i + .5) / nx * config.nx)),
+            oldJ = Math.min(config.ny - 1, Math.floor((j + .5) / ny * config.ny));
+          return config.materialMap[oldJ * config.nx + oldI];
+        });
+        return next;
+      };
+    })(globalThis.TE);
+    (function (TE) {
+      TE.spatialProfile = (r, {
+        field = 'temperature',
+        axis = 'x',
+        position = .5,
+        sample = 0
+      } = {}) => {
+        TE.assert(['temperature', 'voltage', 'Jx', 'Jy', 'qx', 'qy', 'J'].includes(field), 'Unknown profile field.');
+        TE.assert(['x', 'y'].includes(axis) && Number.isFinite(position) && position >= 0 && position <= 1, 'Invalid profile cut.');
+        const periodic = r.method !== 'steady',
+          count = periodic ? r.samples : 1;
+        TE.assert(Number.isInteger(sample) && sample >= 0 && sample < count, 'Invalid time sample.');
+        const c = r.config,
+          nodal = ['temperature', 'voltage'].includes(field),
+          get = k => periodic ? r[k][sample] : r[k];
+        const data = field === 'J' ? get('Jx').map((v, i) => Math.hypot(v, get('Jy')[i])) : get(field);
+        const cols = c.nx + (nodal ? 1 : 0),
+          rows = c.ny + (nodal ? 1 : 0),
+          transverse = axis === 'x' ? rows : cols;
+        const line = Math.max(0, Math.min(transverse - 1, Math.round(position * (axis === 'x' ? c.ny : c.nx) - (nodal ? 0 : .5))));
+        const length = axis === 'x' ? cols : rows,
+          x = [],
+          values = [];
+        for (let k = 0; k < length; k++) {
+          x.push((k + (nodal ? 0 : .5)) * (axis === 'x' ? c.lx / c.nx : c.ly / c.ny));
+          values.push(data[axis === 'x' ? line * cols + k : k * cols + line]);
+        }
+        return {
+          x,
+          values,
+          axis,
+          field,
+          sample,
+          time: periodic ? r.time[sample] : 0,
+          absoluteTime: periodic ? (r.cycleStartTime ?? 0) + r.time[sample] : 0,
+          line,
+          transverseCoordinate: (line + (nodal ? 0 : .5)) * (axis === 'x' ? c.ly / c.ny : c.lx / c.nx),
+          unit: field === 'temperature' ? 'K' : field === 'voltage' ? 'V' : ['qx', 'qy'].includes(field) ? 'W/m²' : 'A/m²'
+        };
+      };
+    })(globalThis.TE);
+    (function (TE) {
+      TE.inferSimulationMode = c => {
+        const ac = v => typeof v === 'object' && v !== null && Number.isFinite(v.amplitude) && v.amplitude !== 0;
+        if (c.electrical.kind !== 'open_circuit' && ac(c.electrical.value)) return 'periodic';
+        if (Object.values(c.thermal).some(b => ac(b.value) && (b.kind !== 'convection' || b.h > 0))) return 'periodic';
+        return 'steady';
+      };
+    })(globalThis.TE);
+    (function (TE) {
+      TE.surfaceField = (r, key, sample = 0) => {
+        TE.assert(['temperature', 'voltage', 'Jx', 'Jy', 'J', 'qx', 'qy'].includes(key), 'Unknown surface field.');
+        const periodic = r.method !== 'steady',
+          c = r.config;
+        TE.assert(Number.isInteger(sample) && sample >= 0 && sample < (periodic ? r.samples : 1), 'Invalid surface sample.');
+        const get = k => periodic ? r[k][sample] : r[k],
+          nodal = ['temperature', 'voltage'].includes(key);
+        const raw = key === 'J' ? get('Jx').map((v, i) => Math.hypot(v, get('Jy')[i])) : get(key);
+        const cells = nodal ? Array.from({
+          length: c.nx * c.ny
+        }, (_, k) => {
+          const i = k % c.nx,
+            j = Math.floor(k / c.nx),
+            a = j * (c.nx + 1) + i;
+          return (raw[a] + raw[a + 1] + raw[a + c.nx + 1] + raw[a + c.nx + 2]) / 4;
+        }) : [...raw];
+        return {
+          cells,
+          nodal,
+          range: TE.valueRange(cells, nodal ? raw : []),
+          unit: key === 'temperature' ? 'K' : key === 'voltage' ? 'V' : ['qx', 'qy'].includes(key) ? 'W/m²' : 'A/m²'
+        };
+      };
+      // Hall voltage V_H = V(P+) − V(P−) between the probe nodes nearest to the given fractions. With the
+      // default probes (P+ bottom middle, P− top middle) a long bar with current along +x gives R_H·I·B/t.
+      TE.hallProbeNodes = c => {
+        const probes = c.hallProbes ?? {plus: {x: .5, y: 0}, minus: {x: .5, y: 1}},
+          node = q => Math.round(q.y * c.ny) * (c.nx + 1) + Math.round(q.x * c.nx);
+        return {plus: node(probes.plus), minus: node(probes.minus)};
+      };
+      TE.hallVoltage = r => {
+        const {plus, minus} = TE.hallProbeNodes(r.config);
+        if (r.method === 'steady') return {value: r.voltage[plus] - r.voltage[minus]};
+        return {
+          history: r.voltage.map(row => row[plus] - row[minus]),
+          harmonics: r.harmonics.voltage.map(row => ({re: row[plus].re - row[minus].re, im: row[plus].im - row[minus].im}))
+        };
+      };
+      // Colour-scale range over displayed cell values and, for nodal fields, the nodal values: cell
+      // averages never reach the nodal extremes (e.g. a prescribed boundary temperature).
+      TE.valueRange = (...lists) => {
+        let lo = Infinity,
+          hi = -Infinity;
+        for (const list of lists) for (const v of list) if (v !== null && Number.isFinite(v)) {
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        return lo <= hi ? {
+          lo,
+          hi
+        } : {
+          lo: 0,
+          hi: 0
+        };
+      };
+      TE.arrowNoiseFloor = r => {
+        let reference = 0;
+        const p = r.method !== 'steady';
+        if (p) {
+          for (let n = 0; n < r.harmonics.Jx.length; n++) for (let i = 0; i < r.harmonics.Jx[n].length; i++) {
+            const a = r.harmonics.Jx[n][i],
+              b = r.harmonics.Jy[n][i];
+            reference = Math.max(reference, Math.hypot(a.re, a.im, b.re, b.im));
+          }
+        } else for (let i = 0; i < r.Jx.length; i++) reference = Math.max(reference, Math.hypot(r.Jx[i], r.Jy[i]));
+        return Math.max(1e-12, reference * 1e-8);
+      };
+    })(globalThis.TE);
+
+    /* Frequency sweep orchestration and complex-response analysis. No DOM dependencies. */
+    (function (TE) {
+      'use strict';
+
+      TE.sweepFrequencies = s => {
+        TE.assert(s && Number.isFinite(s.min) && s.min > 0 && Number.isFinite(s.max) && s.max > s.min, 'Sweep: require 0 < minimum < maximum frequency.');
+        TE.assert(Number.isInteger(s.points) && s.points >= 2 && s.points <= 100, 'Sweep: use 2–100 frequency points.');
+        TE.assert(['log', 'linear'].includes(s.spacing), 'Sweep: choose logarithmic or linear spacing.');
+        const f = Array.from({
+          length: s.points
+        }, (_, i) => i === 0 ? s.min : i === s.points - 1 ? s.max : s.spacing === 'log' ? Math.exp(Math.log(s.min) + (Math.log(s.max) - Math.log(s.min)) * i / (s.points - 1)) : s.min + (s.max - s.min) * i / (s.points - 1));
+        TE.assert(f.every((v, i) => Number.isFinite(v) && v > 0 && (!i || v > f[i - 1])), 'Sweep frequencies are too close to resolve.');
+        return f;
+      };
+      TE.validateSweep = c => {
+        const frequencies = TE.sweepFrequencies(c.sweep);
+        TE.assert(TE.inferSimulationMode(c) === 'periodic', 'A frequency sweep needs a nonzero active electrical or thermal AC excitation.');
+        const bytes = TE.estimateRetainedBytes(c, frequencies.length);
+        TE.assert(bytes <= TE.retainedMemoryLimit, 'Sweep retained data exceeds the 256 MiB estimate. Reduce frequency points, mesh size or time steps.');
+        for (const frequency of frequencies) TE.assertValid2DConfig({
+          ...c,
+          mode: 'periodic',
+          frequency
+        });
+        return frequencies;
+      };
+      TE.runSweep = (c, emit = () => {}) => {
+        const frequencies = TE.validateSweep(c);
+        let completed = 0,
+          unconverged = 0;
+        for (let index = 0; index < frequencies.length; index++) {
+          const frequency = frequencies[index],
+            point = {
+              index,
+              frequency,
+              total: frequencies.length
+            };
+          emit({
+            type: 'sweepStart',
+            ...point
+          });
+          let last = null;
+          try {
+            const r = TE.run2D({
+              ...c,
+              sweep: {
+                ...c.sweep,
+                enabled: false
+              },
+              mode: 'periodic',
+              frequency
+            }, p => emit({
+              type: 'progress',
+              progress: p,
+              ...point
+            }), r => {
+              last = r;
+              emit({
+                type: 'checkpoint',
+                result: r,
+                ...point
+              });
+            });
+            emit({
+              type: 'sweepPoint',
+              result: r,
+              ...point
+            });
+            completed++;
+          } catch (e) {
+            // The final cycle is always checkpointed before the budget error is thrown.
+            if (e.unconverged && last && !last.converged && last.periods === last.config.maxPeriods) {
+              emit({
+                type: 'sweepPoint',
+                result: last,
+                message: e.message,
+                ...point
+              });
+              unconverged++;
+              continue;
+            }
+            emit({
+              type: 'sweepError',
+              message: e.message,
+              ...point
+            });
+            return;
+          }
+        }
+        emit({
+          type: 'sweepDone',
+          completed,
+          unconverged
+        });
+      };
+      const mag = z => Math.hypot(z.re, z.im),
+        angle = z => Math.atan2(z.im, z.re) * 180 / Math.PI,
+        wrap = v => ((v + 180) % 360 + 360) % 360 - 180;
+      const signal = s => {
+        const a = typeof s === 'number' ? 0 : s?.amplitude ?? 0,
+          p = TE.phaseRadians(s?.phase ?? 0);
+        return {
+          re: a * Math.cos(p),
+          im: a * Math.sin(p)
+        };
+      };
+      TE.bodeRows = (results, o = {}) => {
+        const {
+          quantity = 'terminalVoltage',
+          harmonic = 1,
+          reference = 'drive',
+          normalization = 'raw',
+          phaseFloor = 1e-12,
+          unwrap = false,
+          x = .5,
+          y = .5
+        } = o;
+        TE.assert(['terminalVoltage', 'current', 'impedance', 'hallVoltage', 'temperature', 'voltage', 'Jx', 'Jy', 'qx', 'qy'].includes(quantity), 'Unknown Bode quantity.');
+        TE.assert([1, 2, 3].includes(harmonic), 'Choose harmonic 1, 2 or 3.');
+        TE.assert(['raw', 'fundamental', 'power'].includes(normalization), 'Unknown Bode normalization.');
+        TE.assert(['time', 'drive', 'current', 'terminalVoltage', 'left', 'right', 'top', 'bottom'].includes(reference), 'Unknown phase reference.');
+        TE.assert(Number.isFinite(phaseFloor) && phaseFloor >= 0, 'Phase threshold must be finite and nonnegative.');
+        TE.assert([x, y].every(v => Number.isFinite(v) && v >= 0 && v <= 1), 'Probe coordinates must be between 0 and 100%.');
+        TE.assert(quantity !== 'impedance' || harmonic === 1, 'Impedance uses the fundamental (1ω).');
+        TE.assert(quantity === 'impedance' || reference !== 'time' || normalization === 'raw', 'Time reference has no amplitude for normalization.');
+        let previous = null;
+        return results.map(r => {
+          const c = r.config,
+            n = quantity === 'impedance' ? 1 : harmonic,
+            nodal = ['temperature', 'voltage'].includes(quantity),
+            i = nodal ? Math.round(x * c.nx) : Math.min(c.nx - 1, Math.floor(x * c.nx)),
+            j = nodal ? Math.round(y * c.ny) : Math.min(c.ny - 1, Math.floor(y * c.ny));
+          const index = j * (c.nx + (nodal ? 1 : 0)) + i;
+          const z = quantity === 'impedance' ? r.harmonics.terminalVoltage[1] : ['terminalVoltage', 'current'].includes(quantity) ? r.harmonics[quantity][n] : quantity === 'hallVoltage' ? TE.hallVoltage(r).harmonics[n] : r.harmonics[quantity][n][index];
+          let unit = quantity === 'impedance' ? 'Ω' : quantity === 'current' ? 'A' : quantity === 'temperature' ? 'K' : ['terminalVoltage', 'voltage', 'hallVoltage'].includes(quantity) ? 'V' : ['qx', 'qy'].includes(quantity) ? 'W/m²' : 'A/m²',
+            ref = {
+              re: 1,
+              im: 0
+            },
+            refUnit = '',
+            reason = '';
+          if (quantity === 'impedance' || reference === 'current') {
+            ref = r.harmonics.current[1];
+            refUnit = 'A';
+            if (c.electrical.kind === 'open_circuit') reason = 'Open circuit: zero terminal-current reference.';
+          } else if (reference === 'terminalVoltage') {
+            ref = r.harmonics.terminalVoltage[1];
+            refUnit = 'V';
+          } else if (reference === 'drive') {
+            ref = signal(c.electrical.value);
+            refUnit = c.electrical.kind === 'current' ? 'A' : 'V';
+            if (c.electrical.kind === 'open_circuit') reason = 'Electrical drive is inactive in open circuit.';
+          } else if (reference !== 'time') {
+            const b = c.thermal[reference];
+            ref = signal(b.value);
+            refUnit = b.kind === 'flux' ? 'W/m²' : 'K';
+            if (b.kind === 'convection' && b.h === 0) reason = 'Convection reference is inactive (h = 0).';
+          }
+          const a = mag(z),
+            refMag = mag(ref),
+            refSeries = quantity === 'impedance' || reference === 'current' ? r.harmonics.current : reference === 'terminalVoltage' ? r.harmonics.terminalVoltage : null;
+          // Relative noise gate for measured terminal references; imposed references are exact inputs.
+          const refFloor = reference === 'time' && quantity !== 'impedance' ? 0 : Math.max(refUnit === 'K' || refUnit === 'W/m²' ? 1e-9 : 1e-12, refSeries ? Math.max(...refSeries.map(mag)) * 1e-10 : 0);
+          if (!Number.isFinite(refMag) || refMag <= refFloor) reason = reason || 'Reference amplitude is zero or below numerical resolution.';
+          const exponent = normalization === 'power' ? n : 1,
+            divisor = quantity === 'impedance' ? refMag : normalization === 'raw' ? 1 : refMag ** exponent;
+          let magnitude = reason && (quantity === 'impedance' || normalization !== 'raw') ? null : a / divisor;
+          if (magnitude !== null && !Number.isFinite(magnitude)) {
+            magnitude = null;
+            reason = reason || 'Normalization exceeds the finite numerical range.';
+          }
+          if (quantity !== 'impedance' && normalization !== 'raw') unit += '/(' + refUnit + (exponent === 1 ? '' : '^' + exponent) + ')';
+          // Impedance U/I needs no sign flip: U = V(source) − V(sink) and I enters the source.
+          let phase = !reason && a > phaseFloor ? wrap(angle(z) - n * angle(ref)) : null;
+          if (magnitude !== null && magnitude > 1e15) {
+            magnitude = null;
+            phase = null;
+            reason = 'Normalized magnitude exceeds the display limit (1E15). Check reference amplitude and units.';
+          }
+          if (!r.converged) {
+            magnitude = null;
+            phase = null;
+            reason = 'Unconverged point: excluded from Bode.';
+          }
+          if (phase !== null && unwrap && previous !== null) phase += 360 * Math.round((previous - phase) / 360);
+          previous = phase;
+          return {
+            frequency: r.frequency,
+            outputFrequency: n * r.frequency,
+            magnitude,
+            phase,
+            unit,
+            rawMagnitude: a,
+            referenceMagnitude: refMag,
+            converged: r.converged,
+            reason: reason || (phase === null ? 'Output below phase threshold.' : ''),
+            nodeOrCell: ['terminalVoltage', 'current', 'impedance', 'hallVoltage'].includes(quantity) ? null : index,
+            x_m: nodal ? i * c.lx / c.nx : (i + .5) * c.lx / c.nx,
+            y_m: nodal ? j * c.ly / c.ny : (j + .5) * c.ly / c.ny
+          };
+        });
+      };
+      TE.bodeCsv = rows => ['frequency_Hz,output_frequency_Hz,magnitude,unit,phase_deg,raw_magnitude,reference_magnitude,converged,node_or_cell,x_m,y_m,status', ...rows.map(r => [r.frequency, r.outputFrequency, r.magnitude, r.unit, r.phase, r.rawMagnitude, r.referenceMagnitude, r.converged, r.nodeOrCell, r.x_m, r.y_m, r.reason].map(v => v == null ? '' : '"' + String(v).replace(/"/g, '""') + '"').join(','))].join('\n');
+    })(globalThis.TE);
+
+    /* Shared text for the interface and printed report. */
+    (function (TE) {
+      TE.equationGuide = [{
+        "title": "Governing equations and boundaries",
+        "html": "<h3>Unknown fields and constitutive laws</h3><p>T(x,y,t) is absolute temperature (K), V(x,y,t) electric potential (V). The local material defines σ(T), k(T), α(T), density ρ(T), and Cp(T). J is electric current density; q is total heat flux. The two constitutive laws below hold at Bz = 0; in a field they are replaced by the tensor laws of the Magnetic field section, while ∇·J = 0, the energy equation and the boundary conditions are unchanged.</p><p>J = −σ(T)[∇V + α(T)∇T]<br>∇·J = 0<br>q = α(T)TJ − k(T)∇T<br>ρCp ∂T/∂t = −∇·q − J·∇V</p><h3>Thermoelectric coupling</h3><p>Within a smooth homogeneous material at Bz = 0, these equations give:<br>ρCp ∂T/∂t = ∇·(k∇T) + |J|²/σ − T(dα/dT)J·∇T.<br>The last two terms are Joule and Thomson heating. Π = αT is the Peltier coefficient; discontinuities in α produce interface Peltier transport through q. These effects are already included in total flux and must not be added a second time.</p><h3>Boundary and interface conditions</h3><p>Electrical contacts are equipotential; the sink is grounded, V(sink) = 0. The terminal voltage is U = V(source) − V(sink) and the terminal current I enters at the source (passive sign convention: a resistor gives U = RI and absorbs UI). Voltage mode prescribes U; current mode prescribes I; open circuit imposes I = 0. The external leads are ideal conductors with zero Seebeck coefficient: U is measured against an α = 0 reference, and an electrode on thermoelectric material exchanges the contact Peltier heat αTI (absorbed where positive current enters a material with α &gt; 0). Other edges satisfy J·n = 0. Thermal edges prescribe T, q·n = qout, or q·n = h(T − Tambient), where n is the outward normal. Zero total flux includes Peltier transport and, in a field, Ettingshausen transport and the Righi–Leduc part of conduction. Ideal interfaces have continuous T, V, normal J and total normal q; contact resistance is absent. Peltier coupling changes the conductive-flux balance: qcond,right − qcond,left = −Jn T(αright − αleft). Temperature itself remains continuous; its slope generally changes at an interface. Opposite interfaces in Cu/Bi₂Te₃/Cu have opposite Peltier signs for the same current direction. Strong Joule heating can mask cooling. With zero-bias sinusoidal current, inspect the signed 1ω temperature response (real part or phase), not only its DC mean or unsigned amplitude.</p>"
+      }, {
+        "title": "Excitation and numerical method",
+        "html": "<h3>DC and harmonic excitation</h3><p>DC solves the stationary system with ∂T/∂t = 0, using only DC biases. Periodic inputs use b + A cos(2πft + φ); φ is in degrees in the editor. The nonlinear time-domain solution generates harmonics:<br>u(t) = U₀ + Re[Σ Uₙ exp(inωt)], n = 1,2,3.<br>Coefficients are peak phasors, not RMS. Instantaneous spatial profiles use stored time samples, including all resolved harmonics; they are not reconstructed from only 1ω–3ω.</p><h3>Discretization and iteration</h3><p>Each rectangular cell contributes four half-face links. For a link a→b of length L and half-face area A:<br>g = A/[L mean(ρₑ(Ta),ρₑ(Tb))]<br>Iab = g[Va − Vb − αmean(Tb − Ta)]<br>Qab = αmean(Ta + Tb)Iab/2 − kmean A(Tb − Ta)/L.<br>Electrical work Iab(Va − Vb) is shared between the two nodes. Cell heat capacity is split among its four corners. Coupled equations are iterated with Picard, undamped first and damped when an undamped step fails or stops contracting; Peltier cooling at a node, a source proportional to −T, is treated implicitly on the matrix diagonal. The terminal current is I = Σ Iab(ua − ub) over all links, where u is the unit solution (u = 1 on the source, 0 on the sink); this weighting is exact for any link currents that satisfy Kirchhoff's law. Symmetric linear systems use warm-started, Jacobi-preconditioned conjugate gradients; the non-symmetric systems of the magnetic field use banded LU. BDF2 advances periodic runs after one backward-Euler startup step. Cycle convergence checks successive temperature histories and terminal DC/1ω–3ω phasors; the voltage tolerance follows the temperature tolerance through the largest Seebeck coefficient. When the cycle-to-cycle drift decays geometrically along a stable direction, the cycle start is extrapolated to its limit, and convergence is then checked on two plain cycles. Nonlinear acceptance also requires a normalized heat-balance residual ≤ 1.</p><p>Ly × depth gives the cross-section of a 1D reduction. Ny = 1, full left/right contacts and zero top/bottom flux produce the transverse-uniform limit. Grid/time refinement remains necessary, especially for weak 3ω: BDF2 shifts the effective frequency of harmonic n by about (2πn/N)²/3 with N steps per period, about 3 % at 3ω with 64 steps and 0.2 % with 256. The model assumes isotropic material properties (apart from the field-induced terms of the Magnetic field section), perfect interfaces and no front/back heat losses.</p>"
+      }, {
+        "title": "Magnetic field (3D)",
+        "html": "<h3>Galvanomagnetic and thermomagnetic transport</h3><p>A uniform field Bz (T) acts perpendicular to the plane; positive Bz points out of the screen (x right, y up). With R the rotation by +90° (R·v = ẑ × v):<br>E = ρ(1 + mB²)J + R_H·B·RJ + α∇T + N·B·R∇T<br>q = T(αJ + N·B·RJ) − κ(∇T − S·B·R∇T)</p><p>These replace J = −σ(∇V + α∇T) and q = αTJ − k∇T; ∇·J = 0 and ρCp ∂T/∂t = −∇·q − J·∇V hold unchanged. Solved for the current, with E = −∇V, ρ′ = ρₑ(T)(1 + mB²) and h = R_H·B:<br>J = σ̂(E − α∇T − N·B·R∇T), σ̂ = (ρ′ − h·R)/(ρ′² + h²)<br>Within a smooth homogeneous material:<br>ρCp ∂T/∂t = ∇·(κ∇T) + ρ′|J|² − T(dα/dT)J·∇T + 2N·B·ẑ·(∇T × J) + N·B·T·ẑ·(∇ × J)<br>The Hall term does no work, and the Righi–Leduc term only redistributes heat.</p><p>R_H is the Hall coefficient (m³/C), m the magnetoresistance (1/T²), N the Nernst coefficient (V/(K·T)) and S the Righi–Leduc coefficient (1/T), all constant. The Peltier tensor T(α + N·B·R) follows from Onsager reciprocity, so the Ettingshausen coefficient is P = TN/κ (Bridgman relation). In a long bar with current along x: E_y = R_H·B·J_x (Hall) and ∂T/∂y = (TN/κ)·B·J_x (Ettingshausen). Without current and with ∇T along x: E_y = N·B·∂T/∂x (Nernst) and ∂T/∂y = S·B·∂T/∂x (Righi–Leduc).</p><h3>Hall voltage and numerics</h3><p>The Hall voltage is V_H = V(P+) − V(P−) between two point probes. The default probes, P+ at the bottom middle and P− at the top middle, give V_H = R_H·I·B/t for current along +x (t = depth). In the discretization, each link keeps its own longitudinal field and takes the transverse field from the cell average of the two perpendicular links. For a link a→b of length L and half-face area A, with e = [Va − Vb − αmean(Tb − Ta)]/L, ē the cell average of e over the two links of the other direction, ∂T/∂x and ∂T/∂y the cell-average gradients, ρ′ the link-mean ρₑ times (1 + mB²), σL = ρ′/(ρ′² + h²) and σH = h/(ρ′² + h²):<br>x link: Iab = A[σL(e + N·B·∂T/∂y) + σH(ēy − N·B·∂T/∂x)]<br>y link: Iab = A[σL(e − N·B·∂T/∂x) − σH(ēx + N·B·∂T/∂y)]<br>x link: Qab = αmean(Ta + Tb)Iab/2 − κmean A[(Tb − Ta)/L + S·B·∂T/∂y] − A·Tmid·N·B·J̄y<br>y link: Qab = αmean(Ta + Tb)Iab/2 − κmean A[(Tb − Ta)/L − S·B·∂T/∂x] + A·Tmid·N·B·J̄x<br>J̄ is the cell-average current density and Tmid = (Ta + Tb)/2. Electrical work Iab(Va − Vb) is shared between the two nodes, as at Bz = 0. The non-symmetric systems are solved by banded LU, with one factorization per resistivity state. With Bz = 0 the equations and numerics are exactly those of the 2D model.</p>"
+      }];
+    })(globalThis.TE);
+
+    /* Shared phase masking for interactive maps and exported figures. */
+    (function (TE) {
+      TE.phaseMapSettings = Object.freeze({
+        relative: 1e-6,
+        absolute: Object.freeze({
+          temperature: 1e-7,
+          voltage: 1e-12,
+          Jx: 1e-9,
+          Jy: 1e-9,
+          qx: 1e-9,
+          qy: 1e-9
+        })
+      });
+      TE.cellPhasors = (r, key, n) => {
+        const raw = r.method === 'steady' ? r[key].map(re => ({re, im: 0})) : r.harmonics[key][n];
+        if (!['temperature', 'voltage'].includes(key)) return raw;
+        const c = r.config;
+        return Array.from({length: c.nx * c.ny}, (_, k) => {
+          const a = Math.floor(k / c.nx) * (c.nx + 1) + k % c.nx;
+          const ids = [a, a + 1, a + c.nx + 1, a + c.nx + 2];
+          return {re: ids.reduce((sum, i) => sum + raw[i].re, 0) / 4,
+            im: ids.reduce((sum, i) => sum + raw[i].im, 0) / 4};
+        });
+      };
+      TE.harmonicMap = (r, key, n = 0, representation = 'amplitude') => {
+        TE.assert(['amplitude', 'phase', 'real', 'imaginary'].includes(representation), 'Unknown harmonic representation.');
+        if (key === 'J') {
+          const x = TE.cellPhasors(r, 'Jx', n), y = TE.cellPhasors(r, 'Jy', n);
+          const values = x.map((z, i) => Math.hypot(z.re, z.im, y[i].re, y[i].im));
+          return {values, range: TE.valueRange(values)};
+        }
+        if (n > 0 && representation === 'phase') return TE.phaseMap(r, key, n);
+        const pick = z => !n || representation === 'real' ? z.re : representation === 'imaginary' ? z.im : Math.hypot(z.re, z.im);
+        const values = TE.cellPhasors(r, key, n).map(pick);
+        const nodes = ['temperature', 'voltage'].includes(key) ? (r.method === 'steady' ? r[key].map(re => ({re, im: 0})) : r.harmonics[key][n]).map(pick) : [];
+        return {values, range: TE.valueRange(values, nodes)};
+      };
+      // Complex value of a field at a probe node (steady results are real). Nodal fields use the node
+      // itself; cell fields use the mean of the 1, 2 or 4 cells that share the node.
+      TE.probePhasor = (r, key, n, probe) => {
+        const c = r.config, values = r.method === 'steady' ? r[key].map(re => ({re, im: 0})) : r.harmonics[key][n];
+        if (['temperature', 'voltage'].includes(key)) return values[probe];
+        const i = probe % (c.nx + 1), j = Math.floor(probe / (c.nx + 1)), cells = [];
+        for (const jj of [j - 1, j]) for (const ii of [i - 1, i]) if (ii >= 0 && jj >= 0 && ii < c.nx && jj < c.ny) cells.push(values[jj * c.nx + ii]);
+        return {
+          re: cells.reduce((s, z) => s + z.re, 0) / cells.length,
+          im: cells.reduce((s, z) => s + z.im, 0) / cells.length
+        };
+      };
+      TE.phaseMap = (r, key, n, {
+        relative = TE.phaseMapSettings.relative,
+        absolute = TE.phaseMapSettings.absolute[key]
+      } = {}) => {
+        TE.assert(n >= 1 && n <= 3 && r.harmonics?.[key], 'Phase maps require a field harmonic.');
+        TE.assert(Number.isFinite(relative) && relative >= 0 && Number.isFinite(absolute) && absolute >= 0, 'Invalid phase-map threshold.');
+        const raw = r.harmonics[key][n],
+          c = r.config,
+          nodal = ['temperature', 'voltage'].includes(key);
+        let peak = 0;
+        for (const z of raw) peak = Math.max(peak, Math.hypot(z.re, z.im));
+        const threshold = Math.max(absolute, relative * peak);
+        const phasors = TE.cellPhasors(r, key, n);
+        const values = phasors.map(z => Math.hypot(z.re, z.im) > threshold ? Math.atan2(z.im, z.re) * 180 / Math.PI : null);
+        return {
+          values,
+          range: {lo: -180, hi: 180},
+          threshold,
+          masked: values.filter(v => v === null).length
+        };
+      };
+    })(globalThis.TE);
+    return globalThis.TE;
+  }
+  const api = createCore();
+  api.createCore = createCore;
+  host.TE = api;
+})(globalThis);

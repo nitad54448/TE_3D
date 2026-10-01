@@ -1,0 +1,22 @@
+{
+  "files": [
+    "Air.json",
+    "Alumina.json",
+    "Aluminum.json",
+    "Bi2Te3.json",
+    "Bi2Te3_n_type.json",
+    "Bismuth.json",
+    "Copper.json",
+    "Ge_n_1e15.json",
+    "Ge_n_1e19.json",
+    "Ge_p_1e15.json",
+    "Ge_p_1e19.json",
+    "Gold.json",
+    "PbTe.json",
+    "Platinum.json",
+    "Si_n_1e15.json",
+    "Si_n_1e19.json",
+    "Si_p_1e15.json",
+    "Si_p_1e19.json"
+  ]
+}

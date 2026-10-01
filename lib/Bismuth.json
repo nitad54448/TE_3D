@@ -1,0 +1,56 @@
+{
+  "format": "TE_2D_material",
+  "version": 1,
+  "referenceTemperature": 300,
+  "units": {
+    "rho": "kg/m^3",
+    "Cp": "J/(kg K)",
+    "k": "W/(m K)",
+    "sigma": "S/m",
+    "alpha": "V/K",
+    "beta": "1/K",
+    "alphaSlope": "V/K^2",
+    "hall": "m^3/C",
+    "nernst": "V/(K T)",
+    "righiLeduc": "1/T",
+    "magnetoresistance": "1/T^2"
+  },
+  "material": {
+    "name": "Bismuth (polycrystalline)",
+    "rho": 9780,
+    "Cp": 122,
+    "k": 7.97,
+    "sigma": 625000.0,
+    "alpha": -7e-05,
+    "beta": 0,
+    "alphaSlope": 0,
+    "hall": -4.91e-07,
+    "nernst": 6.4e-06,
+    "righiLeduc": -0.307,
+    "magnetoresistance": 0.094,
+    "color": "#b07fd0"
+  },
+  "notes": "Polycrystalline bismuth near room temperature, a semimetal with electrons and holes and the largest Hall, Nernst and Righi-Leduc responses in this library. sigma, hall and nernst come from one polycrystalline sample (Porter et al. 2024): resistivity 0.16 mOhm cm and Hall carrier density 1.27e19 cm^-3 (n-type) at 50 C, Hall mobility 0.31 m^2/Vs, and a low-field Nernst coefficient of 6.4 uV/(K T) at 20 C fitted for |B| < 0.2 T. That paper reports -6.4 in the Gerlach convention; its single-band formula shows that convention has the opposite sign to this program's E_y = N*B*dT/dx, hence +6.4e-6 here. The handbook resistivity at 20 C is 1.29 uOhm m. alpha = -70 uV/K is typical of polycrystalline bismuth at 300 K (single crystals: about -50 uV/K perpendicular and -100 uV/K parallel to the trigonal axis). rho, Cp and k are handbook values. righiLeduc = sigma*hall, as measured for bismuth: its thermal Hall coefficient equals the Hall mobility (Kobayashi et al. 2012). magnetoresistance = mu_H^2 is an order-of-magnitude estimate for a compensated semimetal; measured values are large and depend on orientation and grain size. beta = 0 and alphaSlope = 0 (constant values). Validity: weak fields only, |B| up to about 0.2 T at 300 K. At higher fields the Nernst and Hall responses of bismuth become nonlinear, and the field also lowers the thermal conductivity (by about 16 % for heat perpendicular to the trigonal axis in a single crystal), which this constant-coefficient model does not include. Single crystals are strongly anisotropic, and the sign of their Nernst coefficient depends on the orientation of the field.",
+  "sources": [
+    {
+      "url": "https://doi.org/10.1063/5.0222406",
+      "properties": "Porter, Crawford and Toberer, Rev. Sci. Instrum. 95, 083903 (2024): polycrystalline Bi resistivity, Hall carrier density and mobility (50 C), low-field Nernst coefficient (20 C, Gerlach convention), and the single-band Nernst formula that fixes the convention."
+    },
+    {
+      "url": "https://arxiv.org/pdf/1203.2237",
+      "properties": "Kobayashi, Koizumi and Moritomo (2012): thermal Hall (Righi-Leduc) coefficient of bismuth, negative and equal to the Hall mobility sigma*R_H; thermal conductivity near 10-11 W/(m K) in a single crystal."
+    },
+    {
+      "url": "https://arxiv.org/html/2501.17609",
+      "properties": "Sola et al. (2025): orientation dependence and sign changes of the Nernst coefficient of Bi single crystals near room temperature; field-induced decrease of the thermal conductivity; resistivities 1.14 and 1.44 uOhm m perpendicular and parallel to the trigonal axis."
+    },
+    {
+      "url": "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/12441624",
+      "properties": "Seebeck coefficient of bismuth at 300 K: about -70 uV/K polycrystalline, -50 and -100 uV/K perpendicular and parallel to the trigonal axis."
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Bismuth",
+      "properties": "Handbook values: density 9.78 g/cm^3, molar heat capacity 25.52 J/(mol K) (122 J/(kg K)), thermal conductivity 7.97 W/(m K), resistivity 1.29 uOhm m at 20 C."
+    }
+  ]
+}

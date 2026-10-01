@@ -1,0 +1,40 @@
+{
+  "format": "TE_2D_material",
+  "version": 1,
+  "referenceTemperature": 300,
+  "units": {
+    "rho": "kg/m^3",
+    "Cp": "J/(kg K)",
+    "k": "W/(m K)",
+    "sigma": "S/m",
+    "alpha": "V/K",
+    "beta": "1/K",
+    "alphaSlope": "V/K^2",
+    "hall": "m^3/C",
+    "nernst": "V/(K T)",
+    "righiLeduc": "1/T",
+    "magnetoresistance": "1/T^2"
+  },
+  "material": {
+    "name": "Bi2Te3 n-type (illustrative)",
+    "rho": 7740,
+    "Cp": 154.4,
+    "k": 1.6,
+    "sigma": 110000.0,
+    "alpha": -0.0002,
+    "beta": 0,
+    "alphaSlope": 0,
+    "color": "#ae92d9",
+    "hall": -3.121e-07,
+    "nernst": 1.59e-06,
+    "righiLeduc": -0.013,
+    "magnetoresistance": 0.000307
+  },
+  "notes": "Illustrative n-type partner: same scalar properties as the p-type benchmark with ONLY the Seebeck sign reversed. This is a constructed demonstration preset, not measured n-type material data. Both slopes are zero. Magnetic (3D): hall = -1/(n e) as before (Hall factor 1). nernst, magnetoresistance and righiLeduc are estimates from the single-parabolic-band Boltzmann model with Fermi-Dirac statistics and acoustic-phonon scattering (tau proportional to E^-1/2), at reduced Fermi level 0.07 fitted to this file's Seebeck coefficient: Hall factor 1.13, Hall mobility 389 cm^2/Vs; nernst = (kB/e)*mu_H*[<tau x>/<tau> - <tau^2 x>/<tau^2>] = 1.59e-06 V/(K T); magnetoresistance = 0.000307 1/T^2; righiLeduc = (kappa_e/kappa)*mu_H = -0.013 1/T with kappa_e = L*sigma*T, L = 1.62e-08 W Ohm/K^2. Signs follow this program's convention E_y = N*B*dT/dx; the 'Gerlach' convention used in parts of the literature has the opposite sign. These are order-of-magnitude estimates: multiple anisotropic valleys and mixed scattering change them. Replace them with measured values when available.",
+  "sources": [
+    {
+      "url": "https://doc.comsol.com/6.3/doc/com.comsol.help.models.heat.thermoelectric_leg/thermoelectric_leg.html",
+      "properties": "Positive-Seebeck benchmark is the starting point; the negative Seebeck sign is an explicit modeling assumption."
+    }
+  ]
+}
