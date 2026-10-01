@@ -26,6 +26,9 @@
     assert(c.materials.every(m => typeof m.name === 'string' && m.name.trim().length > 0 && m.name.length <= 200), 'Invalid material name: use 1 to 200 characters.');
     assert(c.description === undefined || typeof c.description === 'string' && c.description.length <= 10000, 'Invalid model description.');
     if (c.sweep?.enabled) TE.validateSweep(c);
+    // Painting colours are cosmetic: a missing or malformed one becomes the default, and hex is lower case
+    // as the colour picker reports it. Applied to every imported model and result alike before comparison.
+    for (const m of c.materials) m.color = TE.materialColor(m.color);
     return c;
   };
   TE.checkProjectResult = r => {
@@ -41,7 +44,7 @@
       v.forEach(x => finite(x, label));
     };
     assert(object(r.mesh), 'Missing result mesh.');
-    for (const key of ['nx', 'ny', 'lx', 'ly']) assert(r.mesh[key] === c[key], 'Result mesh disagrees with model.');
+    for (const key of ['nx', 'ny', 'lx', 'ly', 'depth']) assert(r.mesh[key] === c[key], 'Result mesh disagrees with model.');
     vector(r.mesh.x, nodes, 'mesh x'); vector(r.mesh.y, nodes, 'mesh y');
     assert(same(r.mesh.materialMap, c.materialMap), 'Result materials disagree with model.');
     for (let i = 0; i < nodes; i++) {
@@ -116,16 +119,25 @@
       p += 46 + nl + xl + cl;
     }
     assert(p === size, 'ZIP directory size mismatch.');
+    // A project unzipped and zipped again as a folder has every entry under one top-level folder (plus
+    // macOS __MACOSX/ metadata). Read it as if it were at the root.
+    let folder = '';
+    if (!entries.has('project.json')) {
+      const tops = new Set([...entries.keys()].filter(n => !n.startsWith('__MACOSX/')).map(n => n.includes('/') ? n.slice(0, n.indexOf('/') + 1) : n));
+      const [top] = tops;
+      if (tops.size === 1 && top.endsWith('/') && entries.has(top + 'project.json')) folder = top;
+    }
+    const has = name => entries.has(folder + name);
     let jsonBytes = 0;
     const read = async name => {
-      const e = entries.get(name); assert(e, 'Missing archive data: ' + name);
+      const e = entries.get(folder + name); assert(e, 'Missing archive data: ' + name);
       jsonBytes += e.length;
       assert(e.length > 0 && jsonBytes <= jsonLimit, 'Project JSON exceeds the 256 MiB import limit.');
       const header = new Uint8Array(await blob.slice(e.local, e.local + 30).arrayBuffer()), h = new DataView(header.buffer);
       assert(h.getUint32(0, true) === 0x04034b50 && h.getUint16(6, true) === e.flags && h.getUint16(8, true) === e.method, 'ZIP local header mismatch.');
       const nl = h.getUint16(26, true), xl = h.getUint16(28, true), start = e.local + 30 + nl + xl;
       assert(start + e.compressed <= offset, 'ZIP data extends beyond the archive body.');
-      assert(text.decode(new Uint8Array(await blob.slice(e.local + 30, e.local + 30 + nl).arrayBuffer())) === name, 'ZIP filename mismatch.');
+      assert(text.decode(new Uint8Array(await blob.slice(e.local + 30, e.local + 30 + nl).arrayBuffer())) === e.name, 'ZIP filename mismatch.');
       if (!(e.flags & 8)) assert(h.getUint32(14, true) === e.crc && h.getUint32(18, true) === e.compressed && h.getUint32(22, true) === e.length, 'ZIP local size or checksum mismatch.');
       let payload = blob.slice(start, start + e.compressed), bytes;
       if (e.method === 0) { assert(e.length === e.compressed, 'Stored ZIP size mismatch.'); bytes = new Uint8Array(await payload.arrayBuffer()); }
@@ -146,23 +158,27 @@
         return JSON.parse(text.decode(bytes), (key, value) => { assert(!['__proto__', 'constructor', 'prototype'].includes(key), 'Unsafe JSON property.'); return value; });
       } catch (error) { throw new Error('Invalid project JSON in ' + name + ': ' + error.message); }
     };
-    assert(entries.has('project.json'), 'This ZIP is not a supported project: project.json is missing. Save projects with Save project.');
+    assert(has('project.json'), 'This ZIP is not a supported project: project.json is missing. Save projects with Save project.');
     const metadata = await read('project.json');
     assert(object(metadata) && metadata.format === 'thermoelectric-lab-project' && metadata.version === TE.projectVersion && ['model', 'single', 'sweep'].includes(metadata.kind), 'Unsupported project format/version.');
     if (metadata.kind === 'model') {
       // Project without results: the model, materials, boundaries and solver settings, ready to run.
-      assert(!entries.has('results.json') && !entries.has('sweep-model.json'), 'Project kind disagrees with archive data.');
+      assert(!has('results.json') && !has('sweep-model.json'), 'Project kind disagrees with archive data.');
       return {config: TE.checkEditorModel(await read('model.json')), result: null, sweep: null, selected: 0, view: null, bodeOptions: null};
     }
     const isSweep = metadata.kind === 'sweep';
-    assert(isSweep === entries.has('sweep-model.json'), 'Project kind disagrees with archive data.');
+    assert(isSweep === has('sweep-model.json'), 'Project kind disagrees with archive data.');
     let result, sweep = null, selected = metadata.selectedIndex;
     assert(Number.isInteger(selected) && selected >= 0 && (isSweep || selected === 0), 'Invalid selected result.');
     if (isSweep) {
       const config = TE.checkEditorModel(await read('sweep-model.json')), status = await read('sweep-status.json');
       assert(config.sweep?.enabled && object(status), 'Invalid sweep model/status.');
-      const frequencies = TE.validateSweep(config);
-      assert(same(status.requestedFrequencies, frequencies) && Array.isArray(status.retainedFrequencies) && status.retainedFrequencies.length > 0 && status.retainedFrequencies.length <= frequencies.length, 'Invalid sweep frequency list.');
+      // Log-spaced frequencies come from Math.exp/Math.log, whose last bit differs between JavaScript engines.
+      // The saved list must match this engine's within rounding; it is then used as saved, because the
+      // saved points were computed at exactly those frequencies.
+      const expected = TE.validateSweep(config), frequencies = status.requestedFrequencies,
+        close = (f, g) => typeof f === 'number' && Number.isFinite(f) && Math.abs(f - g) <= 1e-12 * Math.abs(g);
+      assert(Array.isArray(frequencies) && frequencies.length === expected.length && frequencies.every((f, i) => close(f, expected[i]) && (!i || f > frequencies[i - 1])) && Array.isArray(status.retainedFrequencies) && status.retainedFrequencies.length > 0 && status.retainedFrequencies.length <= frequencies.length, 'Invalid sweep frequency list.');
       assert(['running', 'stopped', 'complete'].includes(status.status), 'Invalid sweep status.');
       assert(status.message === undefined || typeof status.message === 'string' && status.message.length <= 10000, 'Invalid sweep message.');
       assert(TE.estimateRetainedBytes(config, status.retainedFrequencies.length) <= TE.retainedMemoryLimit, 'Sweep exceeds retained-data memory limit.');
@@ -175,7 +191,7 @@
         results.push(r);
       }
       // A completed sweep may contain points that exhausted their cycle budget (kept as unconverged).
-    assert(status.status !== 'complete' || results.length === frequencies.length, 'Incomplete data marked as a completed sweep.');
+      assert(status.status !== 'complete' || results.length === frequencies.length, 'Incomplete data marked as a completed sweep.');
       assert(Number.isInteger(selected) && selected >= 0 && selected < results.length, 'Invalid selected sweep point.');
       result = results[selected];
       sweep = {config, frequencies, results, status: status.status === 'running' ? 'stopped' : status.status, message: status.message ?? 'Imported sweep snapshot.'};
@@ -184,10 +200,10 @@
       result = TE.checkProjectResult(await read('results.json'));
       assert(same(config, result.config), 'Saved model does not match computed result.');
     }
-    if (isSweep) TE.validateProjectBode(metadata.bodeOptions);
+    if (isSweep || metadata.bodeOptions != null) TE.validateProjectBode(metadata.bodeOptions);
     const view = metadata.view;
     TE.validateProjectView(view, result);
-    return {config: sweep ? sweep.config : result.config, result, sweep, selected, view, bodeOptions: metadata.bodeOptions};
+    return {config: sweep ? sweep.config : result.config, result, sweep, selected, view, bodeOptions: metadata.bodeOptions ?? null};
   };
   TE.validateProjectView = (view, r) => {
     assert(object(view), 'Invalid saved view.');

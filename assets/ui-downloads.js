@@ -43,9 +43,13 @@
       name: 'report.html',
       data: report.html
     }];
+    // Full reports and SVG figures for the selected point only: for every other point they would add ~80
+    // files and several MB each. Each folder keeps the model, results.json and CSV data.
     for (let i = 0; i < s.results.length; i++) {
       const part = await TE.completeResultsFiles(s.results[i], {
-        probe: selectedProbe
+        probe: selectedProbe,
+        figures: s.results[i] === selected,
+        createdAt: report.createdAt
       });
       for (const file of part) files.push({
         name: `frequency-${String(i + 1).padStart(3, '0')}/` + file.name,
@@ -54,7 +58,7 @@
     }
     files.push({
       name: 'README.txt',
-      data: 'Frequency sweep results. Each frequency-NNN folder contains the complete model, all field histories, harmonics, CSV, SVG and printable report for that point. Root report.html contains the Bode summary and the selected frequency detailed report. bode.csv records physical magnitudes and the selected phase/normalization settings are in sweep-status.json. Only the last complete cycle per frequency is retained. Unconverged cycles are retained but excluded from Bode. Requested but uncomputed frequencies are recorded in sweep-status.json. Terminal voltage U = V(source) - V(sink), with the sink at 0 V and positive current entering the source; impedance = U/I at the fundamental.\n'
+      data: 'Frequency sweep results. Each frequency-NNN folder contains the complete model, all field histories and harmonics (results.json and CSV) for that point; the folder of the selected frequency also holds its printable report and SVG figures. Root report.html contains the Bode summary and the selected frequency detailed report. bode.csv records physical magnitudes and the selected phase/normalization settings are in sweep-status.json. Only the last complete cycle per frequency is retained. Unconverged cycles are retained but excluded from Bode. Requested but uncomputed frequencies are recorded in sweep-status.json. Terminal voltage U = V(source) - V(sink), with the sink at 0 V and positive current entering the source; impedance = U/I at the fundamental.\n'
     });
     return files;
   };

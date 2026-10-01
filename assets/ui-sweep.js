@@ -1,5 +1,13 @@
 (function (app) {
   'use strict';
+  // Probe position in % as an exact fraction; an empty field reads as 0, as before (drawBode reports it).
+  const fraction = id => {
+    try {
+      return TE.readScaledInput(app.$(id), 2);
+    } catch {
+      return Number(app.$(id).value) / 100;
+    }
+  };
   app.bodeOptions = function bodeOptions() {
     return {
       quantity: app.$('bodeQuantity').value,
@@ -8,8 +16,8 @@
       normalization: app.$('bodeNormalization').value,
       phaseFloor: Number(app.$('bodeFloor').value),
       unwrap: app.$('bodeUnwrap').value === 'unwrapped',
-      x: Number(app.$('bodeX').value) / 100,
-      y: Number(app.$('bodeY').value) / 100,
+      x: fraction('bodeX'),
+      y: fraction('bodeY'),
       scale: app.$('bodeScale').value,
       dbReference: Number(app.$('bodeDb').value),
       representation: app.$('bodeRepresentation').value

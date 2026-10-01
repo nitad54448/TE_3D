@@ -43,7 +43,7 @@
           }));
           transfer.push(data.buffer);
           return [key, {
-            encoding: 'complex64',
+            encoding: 'complex128',
             scalar,
             orders: orders.length,
             width,
@@ -95,7 +95,7 @@
       }, (_, i) => Array.from(data.subarray(i * value.columns, (i + 1) * value.columns))) : Array.from(data);
     }
     if (result.harmonics) for (const [key, value] of Object.entries(result.harmonics)) {
-      if (value.encoding !== 'complex64') continue;
+      if (value.encoding !== 'complex128') continue;
       const data = new Float64Array(value.buffer);
       result.harmonics[key] = Array.from({
         length: value.orders

@@ -58,8 +58,12 @@ function setView() {
 }
 const bode = {quantity: 'temperature', harmonic: 2, reference: 'current', normalization: 'raw', phaseFloor: 1e-12,
   unwrap: false, x: .5, y: .5, scale: 'physical', dbReference: 1};
-let checks = 0;
-async function check(label, fn) {await fn(); checks++; console.log('PASS', label);}
+let checks = 0, failures = 0;
+// A failing check is reported and the run continues, so one failure never hides the others.
+async function check(label, fn) {
+  try { await fn(); checks++; console.log('PASS', label); }
+  catch (error) { failures++; process.exitCode = 1; console.log('FAIL', label); console.error(error); }
+}
 (async () => {
   for (const name of fs.readdirSync(path.join(root, 'assets')).filter(x => x.endsWith('.js'))) new vm.Script(fs.readFileSync(path.join(root, 'assets', name), 'utf8'));
   const dc = TE.run2D(model()), ac = TE.run2D(model(true));
@@ -536,7 +540,11 @@ async function check(label, fn) {await fn(); checks++; console.log('PASS', label
     try {
       app.runSimulation(); await new Promise(resolve => setTimeout(resolve, 20)); // the page replays the worker's messages
       assert.equal(el('badge').textContent, 'UNCONVERGED'); assert.equal(el('badge').className, 'warning');
-      assert(app.worker === null && app.result.periods === 3 && !app.result.converged && el('status').textContent.includes('Raise Maximum cycles'));
+      assert(app.worker === null && app.result.periods === 3 && !app.result.converged);
+      // All edges adiabatic: more cycles cannot help, so the advice names the missing thermal anchor (once).
+      const status = el('status').textContent;
+      assert(status.includes(TE.anchorHint) && !status.includes('Raise Maximum cycles') && status.indexOf(TE.anchorHint) === status.lastIndexOf(TE.anchorHint), status);
+      assert(app.unconvergedAdvice(model(true)).includes('Raise Maximum cycles')); // anchored: more cycles may help
     } finally { app.applyGeometry = applyGeometry; delete globalThis.Worker; }
   });
   await check('Painting and Fill re-run the electrode checks', () => {
@@ -628,5 +636,121 @@ async function check(label, fn) {await fn(); checks++; console.log('PASS', label
     menu.hidden = false; context.document.listeners.keydown({key: 'Enter'}); assert.equal(menu.hidden, false);
     context.document.listeners.keydown({key: 'Escape'}); assert.equal(menu.hidden, true);
   });
-  console.log(`\n${checks} regression checks passed.`);
+  // ---- Second review: import robustness, warnings, exact inputs, export size, accessibility ----
+  await check('Log sweeps saved by another JavaScript engine (last-bit differences) import with their saved frequencies', async () => {
+    const c = model(true); c.sweep = {enabled: true, min: .1, max: 100, points: 3, spacing: 'log'};
+    const points = []; TE.runSweep(c, m => {if (m.type === 'sweepPoint') points.push(m.result); if (m.type === 'sweepError') throw new Error(m.message);});
+    const up = x => { const v = new DataView(new ArrayBuffer(8)); v.setFloat64(0, x); v.setBigUint64(0, v.getBigUint64(0) + 1n); return v.getFloat64(0); };
+    const here = TE.sweepFrequencies(c.sweep), there = here.map((f, i) => i && i < here.length - 1 ? up(f) : f); // interior points 1 ulp apart
+    assert.notDeepEqual(there, here);
+    const results = points.map((r, i) => ({...structuredClone(r), frequency: there[i], config: {...structuredClone(r.config), frequency: there[i]}}));
+    const saved = {config: c, frequencies: there, results, status: 'complete', message: 'Sweep completed.'};
+    const files = [...await app.sweepFiles(saved, bode, results[0], 7), metadataFile('sweep', 0, 7)];
+    const loaded = await TE.readProjectZip(await TE.zipFiles(files));
+    assert.deepEqual(loaded.sweep.frequencies, there); assert.deepEqual(loaded.sweep.results.map(r => r.frequency), there);
+    const status = files.find(f => f.name === 'sweep-status.json'), data = JSON.parse(status.data);
+    data.requestedFrequencies[1] *= 1 + 1e-9; // beyond rounding: still rejected
+    const tampered = files.map(f => f === status ? {...f, data: JSON.stringify(data)} : f);
+    await assert.rejects(() => TE.zipFiles(tampered).then(TE.readProjectZip), /Invalid sweep frequency list/);
+  });
+  await check('Periodic models without a thermal anchor run, but are flagged before and after the run', () => {
+    const c = model(true); for (const side of ['left', 'right', 'top', 'bottom']) c.thermal[side] = {kind: 'flux', value: 0};
+    assert.equal(TE.validate2DConfig(c).length, 0); // non-blocking
+    assert.deepEqual(TE.modelWarnings(c).map(w => w.path), ['thermal']); assert.equal(TE.modelWarnings(model(true)).length, 0);
+    const convection = structuredClone(c); convection.thermal.right = {kind: 'convection', value: 300, h: 10};
+    assert.equal(TE.modelWarnings(convection).length, 0); convection.thermal.right.h = 0; assert.equal(TE.modelWarnings(convection).length, 1);
+    assert.equal(TE.modelWarnings({...model(), thermal: c.thermal}).length, 0); // steady: a validation error instead
+    assert(TE.validate2DConfig({...model(), thermal: c.thermal}).some(i => i.path === 'thermal'));
+    c.maxPeriods = 3; assert.throws(() => TE.run2D(c), e => e.unconverged && e.message.includes(TE.anchorHint));
+  });
+  await check('Imported colours are normalized for every project kind; result depth and Bode options are checked', async () => {
+    const project = async (r, meta = metadataFile('single', 0, 2)) => TE.readProjectZip(await TE.zipFiles([...await TE.completeResultsFiles(r, {probe: 2}), meta]));
+    const upper = structuredClone(dc); upper.config.materials[0].color = '#ABCDEF';
+    const loaded = await project(upper);
+    assert.equal(loaded.config.materials[0].color, '#abcdef'); assert.equal(loaded.result.config.materials[0].color, '#abcdef');
+    const missing = structuredClone(dc); delete missing.config.materials[0].color;
+    assert.equal((await project(missing)).config.materials[0].color, TE.defaultMaterialColor);
+    const named = structuredClone(dc); named.config.materials[0].color = 'red';
+    assert.equal((await project(named)).result.config.materials[0].color, TE.defaultMaterialColor);
+    const deeper = structuredClone(dc); deeper.mesh.depth *= 2;
+    await assert.rejects(() => project(deeper), /Result mesh disagrees with model/);
+    const meta = {name: 'project.json', data: JSON.stringify({format: 'thermoelectric-lab-project', version: TE.projectVersion, kind: 'single', selectedIndex: 0, view: {probe: 2}, bodeOptions: {quantity: 'bogus'}})};
+    await assert.rejects(() => project(dc, meta), /Invalid Bode quantity/);
+    assert.equal(app.parseMaterialJson(JSON.stringify({...model().materials[0], color: '#ABCDEF'})).color, '#abcdef');
+  });
+  await check('A project zipped again inside one folder imports; mixed top-level entries do not', async () => {
+    const inFolder = [...dcFiles, metadataFile('single', 0, 2)].map(f => ({...f, name: 'TE_3D_saved/' + f.name}));
+    const loaded = await TE.readProjectZip(await TE.zipFiles([...inFolder, {name: '__MACOSX/TE_3D_saved/._project.json', data: 'x'}]));
+    assert.deepEqual(loaded.result, dc);
+    await assert.rejects(() => TE.zipFiles([...inFolder, {name: 'notes.txt', data: 'x'}]).then(TE.readProjectZip), /not a supported project/);
+    const sweepInFolder = [...sweepFiles, metadataFile('sweep', 1, 7)].map(f => ({...f, name: 'sweep/' + f.name}));
+    assert.deepEqual((await TE.readProjectZip(await TE.zipFiles(sweepInFolder))).sweep, sweep);
+  });
+  await check('The Example selector names the example actually loaded, even when the browser restored another', () => {
+    const {context, app: a, el: e} = appContext({preset: 'hall'}); // e.g. Firefox restoring the last choice on reload
+    assert.equal(e('preset').value, 'layers'); assert.equal(a.presetShown, 'layers');
+    assert.equal(JSON.stringify(a.config), JSON.stringify(context.TE.default2D()));
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    assert(html.includes('<select id="preset" autocomplete="off">') && html.includes('<select id="presetMaterial" class="secondary preset-select" autocomplete="off">'));
+  });
+  await check('DC models keep the periodic settings; inactive fields never block a DC run', () => {
+    const inputs = {sourceSide: 'left', sourceStart: '0', sourceEnd: '100', sinkSide: 'right', sinkStart: '0', sinkEnd: '100', electricalKind: 'current',
+      bias: '0.2', amplitude: '0', phase: '0', excitationMode: 'steady', magneticField: '0', hallPlusX: '50', hallPlusY: '0', hallMinusX: '50', hallMinusY: '100',
+      frequency: '7', samples: '256', maxPeriods: '40'};
+    const {app: a, el: e} = appContext({preset: 'layers', ...inputs});
+    for (const [id, value] of Object.entries(inputs)) e(id).value = value;
+    let c = a.read(); assert.deepEqual([c.mode, c.frequency, c.samples, c.maxPeriods], ['steady', 7, 256, 40]);
+    e('frequency').value = ''; e('maxPeriods').value = '2'; c = a.read(); // invalid but inactive: model values kept
+    assert.deepEqual([c.frequency, c.maxPeriods], [a.config.frequency, a.config.maxPeriods]);
+    e('amplitude').value = '0.1'; e('excitationMode').value = 'periodic'; // active again: strict
+    assert.throws(() => a.read(), /frequency: value required/);
+    a.config = {...a.config, mode: 'steady', frequency: 0}; a.fill(); // saved in DC by an earlier version
+    assert.equal(Number(e('frequency').value), TE.default2D().frequency);
+  });
+  await check('Sweep archives hold reports and SVG figures for the selected point only', () => {
+    const names = sweepFiles.map(f => f.name);
+    assert(names.includes('frequency-001/report.html') && names.some(n => n.startsWith('frequency-001/figures/')));
+    assert(!names.includes('frequency-002/report.html') && !names.some(n => n.startsWith('frequency-002/figures/')));
+    assert(names.includes('frequency-002/results.json') && names.includes('frequency-002/histories/temperature.csv') && names.includes('report.html'));
+    assert(sweepFiles.find(f => f.name === 'frequency-002/README.txt').data.includes('This sweep point has no report.html'));
+    assert(JSON.parse(sweepFiles.find(f => f.name === 'frequency-002/manifest.json').data).files.every(n => names.includes('frequency-002/' + n) || n === 'project.json'));
+  });
+  await check('Unit-scaled inputs (mm, %, µV/K) read back exactly', () => {
+    const input = (value = '') => ({value, dataset: {}});
+    for (const [si, exponent] of [[1.014e-5, 6], [1.988e-5, 6], [4.21e-7, 6], [.45, 2], [6 / 34, 2], [.005061, 3], [.000175, 3]]) {
+      const e = input(); TE.setScaledInput(e, si, exponent); assert.equal(TE.readScaledInput(e, exponent), si);
+      TE.setNumberInput(e, TE.readNumberInput(e)); assert.equal(TE.readScaledInput(e, exponent), si); // focus-out normalization
+    }
+    assert.notEqual(10.14 / 1e6, 1.014e-5); assert.equal(TE.readScaledInput(input('10.14'), 6), 1.014e-5); // typed: no division error
+    const edited = input(); TE.setScaledInput(edited, .45, 2); edited.value = '46'; assert.equal(TE.readScaledInput(edited, 2), .46);
+    const {app: a} = appContext({preset: 'layers'});
+    a.restoreBodeOptions({...bode, x: 1 / 3, y: .123456789012345, representation: 'polar'});
+    assert.deepEqual([a.bodeOptions().x, a.bodeOptions().y], [1 / 3, .123456789012345]);
+    assert(a.numberAttrs(1.014e-5, 6).includes('data-si-number="0.00001014"'));
+  });
+  await check('Live regions: polite validation boxes; run progress rewrites the status at most once a second per cycle', async () => {
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    assert(html.includes('<div id="validationSummary" class="validation-summary" role="status" hidden>') && html.includes('<div id="validationWarnings" class="validation-summary validation-warning" role="status" hidden>'));
+    const {context, app: a, el: e} = appContext({preset: 'layers'});
+    let writes = 0, text = '';
+    Object.defineProperty(e('status'), 'textContent', {get: () => text, set: v => {text = v; writes++;}});
+    const progress = (cycle, step) => ({type: 'progress', progress: {cycle, maxPeriods: 10, step, samples: 64, error: null}});
+    const messages = [...Array.from({length: 30}, (_, i) => progress(1, i + 1)), progress(2, 1)];
+    context.Worker = class { postMessage() { setTimeout(() => messages.forEach(data => this.onmessage({data}))); } terminate() {} };
+    a.applyGeometry = () => a.config;
+    a.runSimulation(); const start = writes; await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(writes - start, 2, text); assert(text.startsWith('Cycle 2/10')); // cycle 1 once, then cycle 2
+    a.cancelSimulation();
+  });
+  await check('One escape function and one colormap serve the page and the exports; dead code is gone', () => {
+    assert.equal(app.esc, TE.escapeHtml); assert.equal(app.color, TE.heatColor);
+    for (const name of ['MaterialCollection', 'spatialProfile']) assert.equal(TE[name], undefined, name);
+    assert.equal(typeof new TE.ThermoelectricMaterial(model().materials[0]).thomson, 'undefined');
+    assert.equal(TE.decodeWorkerMessage({result: {harmonics: {x: {encoding: 'complex128', scalar: true, orders: 1, width: 1, buffer: new Float64Array([1, 2]).buffer}}}}).result.harmonics.x[0].im, 2);
+  });
+  await check('Fallback material list equals lib/index.json', () => {
+    const {app: a} = appContext({preset: 'layers'});
+    assert.equal(JSON.stringify(a.libraryFallback), JSON.stringify(JSON.parse(fs.readFileSync(path.join(root, 'lib', 'index.json'), 'utf8')).files));
+  });
+  console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

@@ -25,7 +25,7 @@ The interface has a dark and a light theme. It follows the system setting until 
 4. **Solver**: shows the solution method; periodic runs set the frequency, time steps per period and maximum cycles here.
 5. **Run simulation**, then inspect **Results**.
 
-**Run simulation** and **Save project** also apply pending mesh changes. Remeshing resamples the material map, so inspect material regions afterwards. Invalid inputs are highlighted and listed above the tabs; Run and Save project stay disabled until they are corrected.
+**Run simulation** and **Save project** also apply pending mesh changes. Remeshing resamples the material map, so inspect material regions afterwards. Invalid inputs are highlighted and listed above the tabs; Run and Save project stay disabled until they are corrected. Warnings that do not block a run, such as a periodic model without a thermal anchor, are listed in a separate box.
 
 ## Physical model
 
@@ -77,7 +77,7 @@ Thermal, for each side (n is the outward normal):
 - **Outward total flux**: q·n is prescribed (W/m², positive outward, including Peltier transport). Zero flux is adiabatic.
 - **Convection**: q·n = h (T − Tambient); the entered value is the ambient temperature (K). A side with h = 0 is inactive.
 
-Fixed-temperature sides that meet at a corner must have identical waveforms. A steady problem needs a thermal anchor: a temperature side, or convection with h > 0.
+Fixed-temperature sides that meet at a corner must have identical waveforms. A steady problem needs a thermal anchor: a temperature side, or convection with h > 0. A periodic run without one is allowed, but nothing then fixes the mean temperature: any net heating (Joule heat, a DC heat flux) makes it drift every cycle, so no periodic state is reached. The application warns before such a run, and an unconverged result names the missing anchor instead of suggesting more cycles.
 
 Interfaces are ideal: T, V, normal J and normal total q are continuous, with no contact resistance. Peltier coupling changes the conductive-flux balance at an interface, qcond,right − qcond,left = −Jn T (αright − αleft); T stays continuous while its slope changes.
 
@@ -85,7 +85,7 @@ Interfaces are ideal: T, V, normal J and normal total q are continuous, with no 
 
 Every electrical and thermal input has the form `b + A cos(2πft + φ)`: DC bias b, AC peak A and phase φ in degrees. One frequency f applies to all inputs.
 
-- **DC · constant electrical drive** solves the stationary problem (∂T/∂t = 0) using only the DC biases. It disables the electrical AC peak and phase but keeps their values for when AC is selected again.
+- **DC · constant electrical drive** solves the stationary problem (∂T/∂t = 0) using only the DC biases. It disables the electrical AC peak and phase but keeps their values for when AC is selected again. The model also keeps the frequency, time steps per period and maximum cycles; these inactive fields never block a DC run.
 - **AC · single frequency** integrates in time until the solution is periodic.
 - **AC · multifrequency sweep** repeats the periodic solution over a list of frequencies (see *Frequency sweeps and Bode analysis*).
 - A nonzero thermal AC peak selects the periodic solver even with DC electrical drive.
@@ -222,7 +222,7 @@ Electrical work Iab(Va − Vb) is shared equally between the two nodes. Each cel
 - the change of the terminal DC to 3ω phasors, relative to an absolute tolerance plus 10⁻⁶·|U|. For the current the absolute tolerance is 10⁻¹⁰ A. For the voltage it is αmax·2·10⁻⁷ K, at least 10⁻¹² V, where αmax is the largest Seebeck coefficient of the model (4·10⁻¹¹ V for Bi₂Te₃): a temperature change at the temperature tolerance moves the terminal voltage by about that much. The value used is reported with the diagnostics;
 - the normalized heat-balance residual.
 
-Otherwise the run ends at the maximum cycle count (3 to 1000) as unconverged: its last cycle is shown, labelled UNCONVERGED and provisional, and can be inspected and exported like any result.
+Otherwise the run ends at the maximum cycle count (3 to 1000) as unconverged: its last cycle is shown, labelled UNCONVERGED and provisional, and can be inspected and exported like any result. The status line suggests more cycles or finer time steps; for a model without a thermal anchor it names the missing anchor instead, since more cycles cannot help there.
 
 **Cycle extrapolation.** The approach to the periodic state is dominated by the slowest thermal mode, so successive cycle-start states differ by d(k) ≈ λ·d(k−1). When three successive cycle starts show 0 < λ < 0.995 with nearly parallel drifts (cosine > 0.999), the cycle start is moved to the extrapolated limit, by d·λ/(1 − λ) (at most 200·d), and the preceding step is shifted by the same amount so BDF2 continues smoothly. The jump only changes a starting state: convergence is still tested on two unextrapolated cycles with unchanged tolerances, the last two cycles of the budget are never extrapolated, and a jump that would leave the operating range or the validity of a material law is skipped. Without a periodic state (no thermal anchor and a net heat input), the drift does not decay and no jump is made. In the RC example, 30 Hz converges in 6 cycles and 300 Hz in 24; without extrapolation they need 123 and 890 cycles for the same impedance to 7 digits. The number of extrapolations is reported with the diagnostics.
 
@@ -402,13 +402,14 @@ The lumped model is accurate here because the example satisfies its assumptions:
 
 ## Material library
 
-`lib/index.json` lists the 18 files offered under **Materials → Select preset…**:
+`lib/index.json` lists the 19 files offered under **Materials → Select preset…**:
 
 - **Metals:** Aluminum, Copper, Gold and Platinum.
 - **Semimetal:** Bismuth (polycrystalline), with the largest Hall, Nernst and Righi–Leduc responses in the library. It is valid for weak fields only (|B| up to about 0.2 T).
 - **Thermoelectrics:** Bi₂Te₃ (p-type benchmark), an illustrative n-type Bi₂Te₃ (the benchmark with the Seebeck sign reversed) and PbTe.
 - **Insulators:** Air and Alumina.
 - **Silicon and germanium,** p- and n-type, lightly doped (10¹⁵ cm⁻³) and heavily doped (10¹⁹ cm⁻³): `Si_n_1e15`, `Si_n_1e19`, `Si_p_1e15`, `Si_p_1e19`, `Ge_n_1e15`, `Ge_n_1e19`, `Ge_p_1e15`, `Ge_p_1e19`.
+- **Germanium reference:** `Ge_p_reference` (Ge-p, reference: p-type, 8.4·10¹⁷ cm⁻³ acceptors), the material of the *Hall, p-Ge* example.
 
 Each file documents its values in `notes` and `sources`. These are starting points, not specimen-specific calibrations.
 
@@ -438,6 +439,7 @@ Every file carries the four magnetic coefficients of the 3D edition (see *Magnet
 | Ge n-type, 1e19 cm-3 (heavily doped) | −6.24·10⁻⁷ | 1.76·10⁻⁶ | −0.000231 | 0.000363 | R_H = ±1/(ne); N, S, m model estimates |
 | Ge p-type, 1e15 cm-3 (lightly doped) | 0.00624 | 9.01·10⁻⁶ | 4.57·10⁻⁷ | 0.012 | R_H = ±1/(ne); N, S, m model estimates |
 | Ge p-type, 1e19 cm-3 (heavily doped) | 6.24·10⁻⁷ | 7.78·10⁻⁷ | 5.74·10⁻⁵ | 6·10⁻⁵ | R_H = ±1/(ne); N, S, m model estimates |
+| Ge-p, reference (8.4·10¹⁷ cm⁻³) | 7.43·10⁻⁶ | 3.08·10⁻⁶ | 4.73·10⁻⁵ | 0.00134 | R_H = ±1/(ne); N, S, m model estimates |
 | Gold | −7.2·10⁻¹¹ | 0 | −0.00318 | 1.01·10⁻⁵ | R_H tabulated; S = σ·R_H; m Kohler bound |
 | PbTe (room-temperature model) | 6.24·10⁻⁷ | 1.74·10⁻⁶ | 0.00883 | 0.000355 | R_H = ±1/(ne); N, S, m model estimates |
 | Platinum | −2.4·10⁻¹¹ | 0 | −0.000221 | 4.88·10⁻⁸ | R_H approximate; S = σ·R_H; m Kohler bound |
@@ -495,11 +497,11 @@ Every file carries the four magnetic coefficients of the 3D edition (see *Magnet
 
 - Values are in SI units: α in V/K and α′ in V/K². The editor displays them in µV/K and µV/K².
 - rho, Cp, k and sigma must be positive. beta, alphaSlope and the four magnetic coefficients are optional and default to 0.
-- The name has 1 to 200 characters, the colour is `#RRGGBB`, and `referenceTemperature`, if present, must be 300.
+- The name has 1 to 200 characters, the colour is `#RRGGBB` (stored in lower case), and `referenceTemperature`, if present, must be 300.
 - A bare material object without the wrapper is also accepted.
 - The format name stays `TE_2D_material`: the 2D application reads the same files and ignores the magnetic keys.
 
-**Add material json** imports such a file (up to 64 KB). To offer a material under **Select preset…**, place its file in `lib/` and run `python lib/build_catalog.py`, which rewrites `lib/index.json` and `lib/catalog.js` (the copy used when `index.html` is opened from disk).
+**Add material json** imports such a file (up to 64 KB). To offer a material under **Select preset…**, place its file in `lib/` and run `python lib/build_catalog.py`, which rewrites `lib/index.json` and `lib/catalog.js` (the copy used when `index.html` is opened from disk). Also update `app.libraryFallback` in `assets/app.js`, the list used when neither file can be read; the regression suite checks that it equals `lib/index.json`.
 
 ## Models, projects and exports
 
@@ -517,7 +519,7 @@ A project is a ZIP of JSON files. It always holds the model: geometry, materials
 - the probe, field, harmonic, representation, arrows and time position;
 - the Bode settings, including the representation.
 
-Results can be inspected and exported without recalculation, and the model can be edited and run again. Import the ZIP as downloaded; do not extract it first.
+Results can be inspected and exported without recalculation, and the model can be edited and run again. Import the ZIP as downloaded. If it was extracted, zip the extracted folder again: a project whose files all sit in one top-level folder is accepted, and macOS `__MACOSX/` entries are ignored.
 
 Project ZIP contents:
 
@@ -531,7 +533,7 @@ Project ZIP contents:
   - `sweep-model.json`;
   - `sweep-status.json`, with the requested and retained frequencies and the Bode settings;
   - `bode.csv`, and `report.html` with the Bode summary followed by the selected frequency;
-  - one `frequency-NNN/` folder per retained point, containing the single-run files;
+  - one `frequency-NNN/` folder per retained point, with `model.json`, `results.json`, the CSV files, `manifest.json` and `README.txt`. Only the folder of the selected frequency also holds `report.html` and `figures/*.svg`, which would otherwise add about 80 files per point;
   - `README.txt`.
 
 Export rules:
@@ -545,6 +547,8 @@ Import requirements:
 
 - Import accepts project ZIPs containing `project.json` (format `thermoelectric-lab-project`, version 3, kind `model`, `single` or `sweep`) with version-3 models. 3D files use version 3 so that the 2D application rejects them instead of ignoring the field, and the 3D application reads only 3D files. Project files are named `TE_3D_<date>_<time>.zip`. Files are stored or Deflate-compressed. Deflate requires browser support for raw Deflate decompression.
 - Encrypted, split and ZIP64 archives, and results ZIPs without `project.json`, are rejected.
+- A sweep's saved frequency list must match its sweep settings to within rounding. Log-spaced frequencies can differ in the last digit between browsers; the saved values are used.
+- Material colours that are missing or not `#RRGGBB` are replaced by the default colour.
 - Limits: 2 GiB per archive, 256 MiB of JSON, and the retained-data budget.
 - Archived HTML and scripts are never executed.
 
@@ -569,4 +573,4 @@ Other exports:
 
 ## Tests
 
-With Node.js 24 or newer, run `node tests/regression.cjs` (58 checks, about fifteen seconds). The suite covers solver smoke cases and the terminal sign convention, an ideal Peltier leg against its analytic solution, convergence of the module example beyond its optimum current, electrode placement checks, cycle extrapolation and the terminal-voltage tolerance, worker encoding and decoding, spatial phasors, colour-scale ranges and the probe readout, display-state handling, projects with and without results, model and project version checks, rejection of results ZIPs without `project.json`, malformed archive rejection, the material limit after runs, start-up of the full page scripts with the Example selector, agreement of the Solver-tab equations with the report guide, and, for the magnetic field: the banded direct solver, zero-field equivalence, the Hall bar and van der Pauw, Nernst, Ettingshausen and Righi–Leduc benchmarks, Onsager symmetry and the energy balance in a field, validation of the magnetic inputs, the Hall voltage in results, Bode rows, reports and CSV, the Hall-bar example, and the material library: every `lib/` file must parse and validate, and the built-in fallback copies must equal their files. It also covers the terminal current, power and impedance in results, reports and CSVs; Hall voltages reported only when the field acts; an exhausted cycle budget shown as an unconverged result rather than an error; validation after painting and filling; saved-view choices; Bode unwrapping across gaps and the real and imaginary CSV columns; current arrows at the phase of the terminal current; the linear-solver labels; `lib/catalog.js` against the files and as the library of a page opened from disk; consistent metal and silicon data; the 200-character name limit; optional startup scripts; the 256-step 3ω example; the Hall, p-Ge example; and the export menu. UI tests use DOM and canvas test doubles.
+With Node.js 24 or newer, run `node tests/regression.cjs` (69 checks, about fifteen seconds). The suite covers solver smoke cases and the terminal sign convention, an ideal Peltier leg against its analytic solution, convergence of the module example beyond its optimum current, electrode placement checks, cycle extrapolation and the terminal-voltage tolerance, worker encoding and decoding, spatial phasors, colour-scale ranges and the probe readout, display-state handling, projects with and without results, model and project version checks, rejection of results ZIPs without `project.json`, malformed archive rejection, the material limit after runs, start-up of the full page scripts with the Example selector, agreement of the Solver-tab equations with the report guide, and, for the magnetic field: the banded direct solver, zero-field equivalence, the Hall bar and van der Pauw, Nernst, Ettingshausen and Righi–Leduc benchmarks, Onsager symmetry and the energy balance in a field, validation of the magnetic inputs, the Hall voltage in results, Bode rows, reports and CSV, the Hall-bar example, and the material library: every `lib/` file must parse and validate, and the built-in fallback copies must equal their files. It also covers the terminal current, power and impedance in results, reports and CSVs; Hall voltages reported only when the field acts; an exhausted cycle budget shown as an unconverged result rather than an error; validation after painting and filling; saved-view choices; Bode unwrapping across gaps and the real and imaginary CSV columns; current arrows at the phase of the terminal current; the linear-solver labels; `lib/catalog.js` against the files and as the library of a page opened from disk; consistent metal and silicon data; the 200-character name limit; optional startup scripts; the 256-step 3ω example; the Hall, p-Ge example; and the export menu. Further checks cover sweep projects saved by another JavaScript engine (last-digit frequency differences), the thermal-anchor warning, colour normalization and the depth check on import, projects zipped again in one folder, the Example selector after the browser restores another choice, DC models keeping their periodic settings, sweep archives with reports for the selected point only, exact unit-scaled inputs, throttled live-region updates, the shared display helpers and the fallback material list. A failing check is reported and the run continues; the summary counts failures and the exit code is nonzero. UI tests use DOM and canvas test doubles.

@@ -4,12 +4,13 @@ This folder holds the material presets of Thermoelectric Lab. Keep it as `lib/` 
 
 ## Contents
 
-- **18 material files**, one material each, with properties referenced to 300 K:
+- **19 material files**, one material each, with properties referenced to 300 K:
   - metals: `Aluminum`, `Copper`, `Gold`, `Platinum`;
   - semimetal: `Bismuth` (polycrystalline; weak fields only, |B| up to about 0.2 T);
   - thermoelectrics: `Bi2Te3` (p-type benchmark), `Bi2Te3_n_type` (illustrative: the benchmark with the Seebeck sign reversed), `PbTe`;
   - insulators: `Air`, `Alumina`;
-  - silicon and germanium model presets, p- and n-type, lightly (10¹⁵ cm⁻³) and heavily (10¹⁹ cm⁻³) doped: `Si_n_1e15`, `Si_n_1e19`, `Si_p_1e15`, `Si_p_1e19`, `Ge_n_1e15`, `Ge_n_1e19`, `Ge_p_1e15`, `Ge_p_1e19`.
+  - silicon and germanium model presets, p- and n-type, lightly (10¹⁵ cm⁻³) and heavily (10¹⁹ cm⁻³) doped: `Si_n_1e15`, `Si_n_1e19`, `Si_p_1e15`, `Si_p_1e19`, `Ge_n_1e15`, `Ge_n_1e19`, `Ge_p_1e15`, `Ge_p_1e19`;
+  - germanium reference: `Ge_p_reference` (p-type, 8.4·10¹⁷ cm⁻³ acceptors), the material of the *Hall, p-Ge* example.
 - **`index.json`**: the list of files the application offers. It is read at startup.
 - **`build_catalog.py`**: rebuilds `index.json` after you add, rename or remove files.
 - **`catalog.js`**: a JavaScript snapshot of all records, also written by `build_catalog.py`. `index.html` loads it, so the presets and examples also work when the page is opened directly from disk.
@@ -79,7 +80,8 @@ The `material` object:
 1. Copy one of the material files, give it a new filename and edit the values, notes and sources.
 2. Keep `"format": "TE_2D_material"` and `"version": 1`: `build_catalog.py` rejects other values.
 3. Run `python lib/build_catalog.py`. It checks every file and rewrites `index.json` and `catalog.js`, listing the files alphabetically. `catalog.js` is what the page reads when opened from disk. When the page is served over HTTP you can also edit the `files` array of `index.json` by hand; no directory listing or server-side code is needed.
-4. Reload the application.
+4. If you added, renamed or removed a file, update `app.libraryFallback` in `assets/app.js` to the new `index.json` list. It is used only when neither `catalog.js` nor `index.json` can be read; the regression suite checks that the two lists agree.
+5. Reload the application.
 
 ## Magnetic coefficients and the Si and Ge presets
 

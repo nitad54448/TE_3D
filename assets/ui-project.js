@@ -29,11 +29,13 @@
     if (!o) return;
     for (const [id, value] of Object.entries({bodeQuantity: o.quantity, bodeHarmonic: o.harmonic,
       bodeReference: o.reference, bodeNormalization: o.normalization, bodeFloor: o.phaseFloor,
-      bodeUnwrap: o.unwrap ? 'unwrapped' : 'wrapped', bodeX: 100 * o.x, bodeY: 100 * o.y,
+      bodeUnwrap: o.unwrap ? 'unwrapped' : 'wrapped',
       bodeScale: o.scale, bodeDb: o.dbReference, bodeRepresentation: o.representation ?? 'polar'})) {
       const e = app.$(id);
       if (e.type === 'number') TE.setNumberInput(e, value); else e.value = String(value);
     }
+    TE.setScaledInput(app.$('bodeX'), o.x, 2);
+    TE.setScaledInput(app.$('bodeY'), o.y, 2);
   };
   app.importProject = async function importProject() {
     const file = app.$('projectFile').files[0];
@@ -53,7 +55,7 @@
       app.activeSweep = null;
       if (!project.result) {
         // Project without results (like an example): load the model and settings, ready to run.
-        app.config.materials.forEach(m => { if (!/^#[0-9a-f]{6}$/i.test(m.color)) m.color = '#73d8d0'; });
+        // (Material colours are already normalized by TE.checkEditorModel, for every project kind.)
         app.fill();
         app.clearResults('No results yet: this project holds the model only. Run it to compute the response.');
         app.$('elapsed').textContent = '';

@@ -3,19 +3,14 @@ globalThis.TEApp = {};
 (function (app) {
   'use strict';
   app.$ = id => document.getElementById(id);
-  app.esc = s => String(s).replace(/[&<>"']/g, c => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
-  })[c]);
+  app.esc = TE.escapeHtml;
   app.clock = null;
   app.checkpoint = null;
   app.lastMeshEdit = null;
   app.sweepResult = null;
   app.activeSweep = null;
   app.config = TE.default2D();
+  app.defaultPreset = 'layers'; // the example that TE.default2D() builds, shown by the selector at startup
   app.selected = 0;
   app.result = null;
   app.worker = null;
@@ -37,6 +32,12 @@ globalThis.TEApp = {};
     const e = app.$(id);
     TE.assert(e.value.trim() !== '', `${id}: value required.`);
     return TE.readNumberInput(e);
+  };
+  // Inputs shown in mm, % or µV/K: the SI value, exact (exponent 3, 2 or 6).
+  app.scaledNum = (id, exponent) => {
+    const e = app.$(id);
+    TE.assert(e.value.trim() !== '', `${id}: value required.`);
+    return TE.readScaledInput(e, exponent);
   };
   app.exporting = false;
   app.inputsChanged = false;

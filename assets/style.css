@@ -774,6 +774,12 @@ footer {
 .validation-summary li {
   margin:4px 0;
 }
+/* Non-blocking advice: the model runs, but probably not as intended. */
+.validation-warning {
+  border-color:var(--warning-text);
+  background:var(--warning-bg);
+  color:var(--warning-text);
+}
 input[aria-invalid="true"],select[aria-invalid="true"] {
   border-color:var(--error-border);
   background:var(--error-bg);

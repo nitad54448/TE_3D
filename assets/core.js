@@ -36,7 +36,6 @@
           sigma,
           alpha,
           name = 'Material',
-          dalpha_dT = null,
           hall = 0,
           nernst = 0,
           righiLeduc = 0,
@@ -49,7 +48,6 @@
             sigma,
             alpha,
             name,
-            derivative: dalpha_dT,
             // Magnetic coefficients (constant): Hall R_H (m³/C), Nernst N (V/(K·T)), Righi–Leduc S (1/T)
             // and magnetoresistance m (1/T²), defined in the equation guide.
             hall,
@@ -82,37 +80,8 @@
         electricalResistivity(T) {
           return 1 / this.electricalConductivity(T);
         }
-        peltier(T) {
-          return T * this.seebeck(T);
-        }
-        dalphaDT(T) {
-          if (this.derivative !== null) return TE.law(this.derivative, T);
-          if (typeof this.alpha === 'number') return 0;
-          const h = Math.min(T / 2, Math.max(1, T) * 6e-6);
-          return (this.seebeck(T + h) - this.seebeck(T - h)) / (2 * h);
-        }
-        thomson(T) {
-          return T * this.dalphaDT(T);
-        }
-        ZT(T) {
-          return this.seebeck(T) ** 2 * this.electricalConductivity(T) * T / this.thermalConductivity(T);
-        }
       }
-      class MaterialCollection {
-        constructor(material) {
-          this.materials = [material];
-        }
-        get material() {
-          return this.materials[0];
-        }
-        addMaterial(m) {
-          this.materials.push(m);
-        }
-      }
-      Object.assign(TE, {
-        ThermoelectricMaterial,
-        MaterialCollection
-      });
+      TE.ThermoelectricMaterial = ThermoelectricMaterial;
     })(globalThis.TE = globalThis.TE || {});
 
     /* Conservative application operating envelope, not material certification. */
@@ -1206,7 +1175,7 @@
         }
         solveSteady(options = {}) {
           this.frequency = 0;
-          TE.assert(Object.values(this.boundaries).some(b => b.kind === 'temperature' || b.kind === 'convection' && b.h > 0), 'Steady state requires a thermal anchor.');
+          TE.assert(TE.hasThermalAnchor({thermal: this.boundaries}), 'Steady state requires a thermal anchor.');
           const T = this.implicit(0, null, 0, {
             ...options,
             initial: this.initial(options.T0)
@@ -1413,7 +1382,8 @@
               }
             }
           }
-          const failure = new Error(`Periodic state not reached in ${maxPeriods} cycles (combined error ${error.toExponential(2)}).`);
+          const anchored = TE.hasThermalAnchor({thermal: this.boundaries}),
+            failure = new Error(`Periodic state not reached in ${maxPeriods} cycles (combined error ${error.toExponential(2)}).${anchored ? '' : ' ' + TE.anchorHint}`);
           failure.unconverged = true;
           throw failure;
         }
@@ -1561,7 +1531,7 @@
             add(`thermal.${b}.value.bias`, `Temperature waveforms conflict at the ${a}/${b} corner.`);
           }
         }
-        if (c.mode === 'steady' && object(c.thermal) && !Object.values(c.thermal).some(b => b?.kind === 'temperature' || b?.kind === 'convection' && Number.isFinite(b.h) && b.h > 0)) add('thermal', 'A steady problem needs a thermal anchor: an imposed temperature or convection with h > 0.');
+        if (c.mode === 'steady' && object(c.thermal) && !TE.hasThermalAnchor(c)) add('thermal', 'A steady problem needs a thermal anchor: an imposed temperature or convection with h > 0.');
         const mats = c.materials;
         if (!Array.isArray(mats) || mats.length < 1 || mats.length > 12) add('materials', 'Define between 1 and 12 materials.');else mats.forEach((m, i) => {
           const p = `materials.${i}`;
@@ -1653,8 +1623,6 @@
               add('electrical.sinkRange', 'Source and sink electrodes must not overlap.');
             }
           }
-          // Each electrode must touch conducting material. Forcing current through a near-insulator next
-          // to good conductors (contrast beyond ~1E14) cannot be resolved in double precision.
           if (c.hallProbes !== undefined) {
             const probes = c.hallProbes,
               ok = name => object(probes?.[name]) && [probes[name].x, probes[name].y].every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1);
@@ -1667,6 +1635,8 @@
               }
             }
           }
+          // Each electrode must touch conducting material. Forcing current through a near-insulator next
+          // to good conductors (contrast beyond ~1E14) cannot be resolved in double precision.
           if (contacts.source && contacts.sink && Array.isArray(mats) && Array.isArray(c.materialMap) && !errors.some(e => e.path.startsWith('materials') || e.path === 'materialMap')) {
             const sigma = mats.map(m => {
               try {
@@ -1690,6 +1660,15 @@
         }
         return errors;
       };
+      // A fixed temperature, or convection with h > 0, sets the temperature level. Without one a steady
+      // problem is singular, and a periodic run drifts with any net heating (Joule heat, a DC heat flux).
+      TE.hasThermalAnchor = c => Object.values(c?.thermal ?? {}).some(b => b?.kind === 'temperature' || b?.kind === 'convection' && Number.isFinite(b.h) && b.h > 0);
+      TE.anchorHint = 'No thermal anchor fixes the mean temperature, so any net heating makes it drift every cycle and no periodic state is reached: fix a temperature on one edge or use convection with h > 0.';
+      // Non-blocking advice: the model is valid and runs, but probably not as intended.
+      TE.modelWarnings = c => c && c.mode === 'periodic' && c.thermal && typeof c.thermal === 'object' && !TE.hasThermalAnchor(c) ? [{
+        path: 'thermal',
+        message: TE.anchorHint
+      }] : [];
       TE.assertValid2DConfig = c => {
         const issues = TE.validate2DConfig(c);
         if (issues.length) {
@@ -1874,6 +1853,44 @@
         const raw = element.dataset.rawNumber;
         return TE.finite(Number(raw !== undefined && element.value === element.dataset.displayNumber ? raw : element.value), 'Numerical value');
       };
+      // Exact decimal rescaling for unit-scaled inputs (mm, %, µV/K): the decimal text is shifted by a power
+      // of ten and parsed once, as JSON would: 10.14 µV/K reads as 1.014e-5 V/K, whereas 10.14 / 1e6 is 1 ulp off.
+      TE.shiftDecimal = (text, exponent) => {
+        const match = /^\s*([+-]?(?:\d+\.?\d*|\.\d+))(?:[eE]([+-]?\d+))?\s*$/.exec(String(text));
+        return match ? Number(`${match[1]}e${Number(match[2] ?? 0) + exponent}`) : Number(text) * 10 ** exponent;
+      };
+      // A scaled input shows value·10^exponent and keeps the SI value itself, used while that display is unchanged.
+      TE.setScaledInput = (element, value, exponent) => {
+        TE.setNumberInput(element, TE.shiftDecimal(String(value), exponent));
+        element.dataset.siNumber = String(value);
+        element.dataset.siDisplay = element.dataset.displayNumber;
+      };
+      TE.readScaledInput = (element, exponent) => {
+        TE.assert(element.value.trim() !== '', 'A numerical value is required.');
+        const {siNumber, siDisplay, rawNumber, displayNumber} = element.dataset;
+        if (siNumber !== undefined && element.value === siDisplay) return TE.finite(Number(siNumber), 'Numerical value');
+        const text = rawNumber !== undefined && element.value === displayNumber ? rawNumber : element.value;
+        return TE.finite(TE.shiftDecimal(text, -exponent), 'Numerical value');
+      };
+      TE.escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      })[c]);
+      // Heat-map palette shared by the interactive maps and the exported figures; t from 0 to 1.
+      TE.heatColor = t => {
+        const stops = [[24, 44, 89], [36, 107, 153], [87, 182, 173], [227, 193, 110], [244, 141, 75]],
+          u = Math.max(0, Math.min(1, t)) * 4,
+          i = Math.min(3, Math.floor(u)),
+          f = u - i;
+        return `rgb(${stops[i].map((v, k) => Math.round(v + (stops[i + 1][k] - v) * f)).join(',')})`;
+      };
+      // Painting colours are #rrggbb in lower case, as <input type=color> reports them; anything else
+      // (missing, named or malformed) shows and saves as the default colour.
+      TE.defaultMaterialColor = '#73d8d0';
+      TE.materialColor = color => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : TE.defaultMaterialColor;
       TE.historyForPlot = (result, values) => {
         const time = result.time.map(v => v * 1000),
           y = [...values];
@@ -1916,47 +1933,6 @@
           return config.materialMap[oldJ * config.nx + oldI];
         });
         return next;
-      };
-    })(globalThis.TE);
-    (function (TE) {
-      TE.spatialProfile = (r, {
-        field = 'temperature',
-        axis = 'x',
-        position = .5,
-        sample = 0
-      } = {}) => {
-        TE.assert(['temperature', 'voltage', 'Jx', 'Jy', 'qx', 'qy', 'J'].includes(field), 'Unknown profile field.');
-        TE.assert(['x', 'y'].includes(axis) && Number.isFinite(position) && position >= 0 && position <= 1, 'Invalid profile cut.');
-        const periodic = r.method !== 'steady',
-          count = periodic ? r.samples : 1;
-        TE.assert(Number.isInteger(sample) && sample >= 0 && sample < count, 'Invalid time sample.');
-        const c = r.config,
-          nodal = ['temperature', 'voltage'].includes(field),
-          get = k => periodic ? r[k][sample] : r[k];
-        const data = field === 'J' ? get('Jx').map((v, i) => Math.hypot(v, get('Jy')[i])) : get(field);
-        const cols = c.nx + (nodal ? 1 : 0),
-          rows = c.ny + (nodal ? 1 : 0),
-          transverse = axis === 'x' ? rows : cols;
-        const line = Math.max(0, Math.min(transverse - 1, Math.round(position * (axis === 'x' ? c.ny : c.nx) - (nodal ? 0 : .5))));
-        const length = axis === 'x' ? cols : rows,
-          x = [],
-          values = [];
-        for (let k = 0; k < length; k++) {
-          x.push((k + (nodal ? 0 : .5)) * (axis === 'x' ? c.lx / c.nx : c.ly / c.ny));
-          values.push(data[axis === 'x' ? line * cols + k : k * cols + line]);
-        }
-        return {
-          x,
-          values,
-          axis,
-          field,
-          sample,
-          time: periodic ? r.time[sample] : 0,
-          absoluteTime: periodic ? (r.cycleStartTime ?? 0) + r.time[sample] : 0,
-          line,
-          transverseCoordinate: (line + (nodal ? 0 : .5)) * (axis === 'x' ? c.ly / c.ny : c.lx / c.nx),
-          unit: field === 'temperature' ? 'K' : field === 'voltage' ? 'V' : ['qx', 'qy'].includes(field) ? 'W/m²' : 'A/m²'
-        };
       };
     })(globalThis.TE);
     (function (TE) {

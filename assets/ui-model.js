@@ -1,24 +1,29 @@
 (function (app) {
   'use strict';
-  app.numberAttrs = function numberAttrs(value) {
-    return `value="${app.esc(TE.formatInputNumber(value))}" data-raw-number="${app.esc(value)}" data-display-number="${app.esc(TE.formatInputNumber(value))}"`;
+  // exponent ≠ 0: value is in SI units and shown scaled by 10^exponent (mm, %, µV/K); TE.readScaledInput
+  // returns the SI value exactly while the display is unchanged (see TE.setScaledInput).
+  app.numberAttrs = function numberAttrs(value, exponent = 0) {
+    const shown = exponent ? TE.shiftDecimal(String(value), exponent) : value,
+      display = app.esc(TE.formatInputNumber(shown));
+    return `value="${display}" data-raw-number="${app.esc(shown)}" data-display-number="${display}"` +
+      (exponent ? ` data-si-number="${app.esc(value)}" data-si-display="${display}" data-exponent="${exponent}"` : '');
   };
-  app.input = function input(label, key, value, unit = '') {
-    return `<label>${label}<span>${unit}</span><input data-key="${key}" type="number" step="any" required ${['rho', 'Cp', 'k', 'sigma', 'h'].includes(key) ? 'min="0"' : ''} ${app.numberAttrs(value)}></label>`;
+  app.input = function input(label, key, value, unit = '', exponent = 0) {
+    return `<label>${label}<span>${unit}</span><input data-key="${key}" type="number" step="any" required ${['rho', 'Cp', 'k', 'sigma', 'h'].includes(key) ? 'min="0"' : ''} ${app.numberAttrs(value, exponent)}></label>`;
   };
   app.materialsForm = function materialsForm() {
     const canRemove = app.config.materials.length > 1;
-    app.$('materialCards').innerHTML = app.config.materials.map((m, i) => `<div class="material-card" data-material="${i}" style="--material-color:${/^#[0-9a-f]{6}$/i.test(m.color) ? m.color : '#73d8d0'}"><div class="name-row"><label>Material ${i + 1}<input data-key="name" maxlength="200" value="${app.esc(m.name)}"></label><label>Color<input type="color" data-key="color" value="${app.esc(m.color)}"></label><button type="button" class="remove-material" data-remove="${i}" title="Remove material" ${canRemove ? '' : 'disabled'}>✕</button></div><div class="grid2">${app.input('Density', 'rho', m.rho, 'kg/m³')}${app.input('Heat capacity', 'Cp', m.Cp, 'J/kg K')}${app.input('Thermal conductivity', 'k', m.k, 'W/m K')}${app.input('Electrical conductivity', 'sigma', m.sigma, 'S/m')}${app.input('Resistivity slope β', 'beta', m.beta ?? 0, '1/K')}${app.input('Seebeck α₃₀₀', 'alpha', m.alpha * 1e6, 'µV/K')}${app.input('Seebeck slope α′', 'alphaSlope', (m.alphaSlope ?? 0) * 1e6, 'µV/K²')}${app.input('Hall coefficient R_H', 'hall', m.hall ?? 0, 'm³/C')}${app.input('Nernst coefficient N', 'nernst', m.nernst ?? 0, 'V/(K·T)')}${app.input('Righi–Leduc S', 'righiLeduc', m.righiLeduc ?? 0, '1/T')}${app.input('Magnetoresistance m', 'magnetoresistance', m.magnetoresistance ?? 0, '1/T²')}</div></div>`).join('');
+    app.$('materialCards').innerHTML = app.config.materials.map((m, i) => `<div class="material-card" data-material="${i}" style="--material-color:${TE.materialColor(m.color)}"><div class="name-row"><label>Material ${i + 1}<input data-key="name" maxlength="200" value="${app.esc(m.name)}"></label><label>Color<input type="color" data-key="color" value="${TE.materialColor(m.color)}"></label><button type="button" class="remove-material" data-remove="${i}" title="Remove material" ${canRemove ? '' : 'disabled'}>✕</button></div><div class="grid2">${app.input('Density', 'rho', m.rho, 'kg/m³')}${app.input('Heat capacity', 'Cp', m.Cp, 'J/kg K')}${app.input('Thermal conductivity', 'k', m.k, 'W/m K')}${app.input('Electrical conductivity', 'sigma', m.sigma, 'S/m')}${app.input('Resistivity slope β', 'beta', m.beta ?? 0, '1/K')}${app.input('Seebeck α₃₀₀', 'alpha', m.alpha, 'µV/K', 6)}${app.input('Seebeck slope α′', 'alphaSlope', m.alphaSlope ?? 0, 'µV/K²', 6)}${app.input('Hall coefficient R_H', 'hall', m.hall ?? 0, 'm³/C')}${app.input('Nernst coefficient N', 'nernst', m.nernst ?? 0, 'V/(K·T)')}${app.input('Righi–Leduc S', 'righiLeduc', m.righiLeduc ?? 0, '1/T')}${app.input('Magnetoresistance m', 'magnetoresistance', m.magnetoresistance ?? 0, '1/T²')}</div></div>`).join('');
     app.palette();
     if (app.updateMaterialCap) app.updateMaterialCap();
   };
   app.palette = function palette() {
-    app.$('palette').innerHTML = app.config.materials.map((m, i) => `<button class="swatch ${i === app.selected ? 'active' : ''}" data-select="${i}" style="--swatch:${/^#[0-9a-f]{6}$/i.test(m.color) ? m.color : '#73d8d0'}"><i></i>${app.esc(m.name)}</button>`).join('');
+    app.$('palette').innerHTML = app.config.materials.map((m, i) => `<button class="swatch ${i === app.selected ? 'active' : ''}" data-select="${i}" style="--swatch:${TE.materialColor(m.color)}"><i></i>${app.esc(m.name)}</button>`).join('');
   };
   app.boundaryForm = function boundaryForm() {
     app.$('electrodes').innerHTML = ['source', 'sink'].map(name => {
       const e = app.config.electrical;
-      return `<div class="electrode"><h3>${name.toUpperCase()} ELECTRODE</h3><div class="grid3"><label>Side<select id="${name}Side">${['left', 'right', 'bottom', 'top'].map(side => `<option ${side === e[name + 'Side'] ? 'selected' : ''}>${side}</option>`).join('')}</select></label><label>Range start <span>%</span><input id="${name}Start" type="number" ${app.numberAttrs(100 * e[name + 'Range'][0])} min="0" max="100"></label><label>Range end <span>%</span><input id="${name}End" type="number" ${app.numberAttrs(100 * e[name + 'Range'][1])} min="0" max="100"></label></div></div>`;
+      return `<div class="electrode"><h3>${name.toUpperCase()} ELECTRODE</h3><div class="grid3"><label>Side<select id="${name}Side">${['left', 'right', 'bottom', 'top'].map(side => `<option ${side === e[name + 'Side'] ? 'selected' : ''}>${side}</option>`).join('')}</select></label><label>Range start <span>%</span><input id="${name}Start" type="number" ${app.numberAttrs(e[name + 'Range'][0], 2)} min="0" max="100"></label><label>Range end <span>%</span><input id="${name}End" type="number" ${app.numberAttrs(e[name + 'Range'][1], 2)} min="0" max="100"></label></div></div>`;
     }).join('');
     app.$('thermalCards').innerHTML = ['left', 'right', 'bottom', 'top'].map(side => { const b = app.config.thermal[side]; return `<div class="thermal-card" data-side="${side}"><h3>${side.toUpperCase()}</h3><label>Condition<select data-key="kind">${['temperature', 'flux', 'convection'].map(k => `<option value="${k}" ${b.kind === k ? 'selected' : ''}>${{
       temperature: 'Temperature · K',
@@ -32,10 +37,10 @@
     app.materialsForm();
     app.boundaryForm();
     const v = app.config.electrical.value;
+    for (const [id, value, exponent] of [['lx', app.config.lx, 3], ['ly', app.config.ly, 3], ['depth', app.config.depth, 3],
+      ['hallPlusX', app.config.hallProbes?.plus.x ?? .5, 2], ['hallPlusY', app.config.hallProbes?.plus.y ?? 0, 2],
+      ['hallMinusX', app.config.hallProbes?.minus.x ?? .5, 2], ['hallMinusY', app.config.hallProbes?.minus.y ?? 1, 2]]) TE.setScaledInput(app.$(id), value, exponent);
     for (const [id, value] of Object.entries({
-      lx: app.config.lx * 1000,
-      ly: app.config.ly * 1000,
-      depth: app.config.depth * 1000,
       nx: app.config.nx,
       ny: app.config.ny,
       electricalKind: app.config.electrical.kind,
@@ -43,14 +48,11 @@
       amplitude: typeof v === 'number' ? 0 : v.amplitude ?? 0,
       phase: typeof v === 'number' ? 0 : v.phase ?? 0,
       mode: app.config.mode,
-      frequency: app.config.frequency,
+      // Models saved in DC by earlier versions store frequency 0: offer the default for a switch to AC.
+      frequency: app.config.frequency > 0 ? app.config.frequency : TE.default2D().frequency,
       samples: app.config.samples,
       maxPeriods: app.config.maxPeriods,
-      magneticField: app.config.magneticField ?? 0,
-      hallPlusX: 100 * (app.config.hallProbes?.plus.x ?? .5),
-      hallPlusY: 100 * (app.config.hallProbes?.plus.y ?? 0),
-      hallMinusX: 100 * (app.config.hallProbes?.minus.x ?? .5),
-      hallMinusY: 100 * (app.config.hallProbes?.minus.y ?? 1)
+      magneticField: app.config.magneticField ?? 0
     })) {
       if (app.$(id).type === 'number') TE.setNumberInput(app.$(id), value);else app.$(id).value = value;
     }
@@ -78,10 +80,9 @@
       const m = {};
       card.querySelectorAll('[data-key]').forEach(e => {
         TE.assert(e.value.trim() !== '', 'Complete material fields.');
-        m[e.dataset.key] = ['name', 'color'].includes(e.dataset.key) ? e.value : TE.readNumberInput(e);
+        const key = e.dataset.key, exponent = Number(e.dataset.exponent ?? 0);
+        m[key] = ['name', 'color'].includes(key) ? e.value : exponent ? TE.readScaledInput(e, exponent) : TE.readNumberInput(e);
       });
-      m.alpha /= 1e6;
-      m.alphaSlope /= 1e6;
       return m;
     });
     for (const card of document.querySelectorAll('[data-side]')) {
@@ -109,7 +110,7 @@
     };
     for (const name of ['source', 'sink']) {
       c.electrical[name + 'Side'] = app.$(name + 'Side').value;
-      c.electrical[name + 'Range'] = [app.num(name + 'Start') / 100, app.num(name + 'End') / 100];
+      c.electrical[name + 'Range'] = [app.scaledNum(name + 'Start', 2), app.scaledNum(name + 'End', 2)];
     }
     c.sweep = app.$('excitationMode').value === 'sweep' ? {
       enabled: true,
@@ -122,13 +123,24 @@
     };
     c.magneticField = app.num('magneticField');
     c.hallProbes = {
-      plus: {x: app.num('hallPlusX') / 100, y: app.num('hallPlusY') / 100},
-      minus: {x: app.num('hallMinusX') / 100, y: app.num('hallMinusY') / 100}
+      plus: {x: app.scaledNum('hallPlusX', 2), y: app.scaledNum('hallPlusY', 2)},
+      minus: {x: app.scaledNum('hallMinusX', 2), y: app.scaledNum('hallMinusY', 2)}
     };
     c.mode = TE.inferSimulationMode(c);
-    c.frequency = c.sweep.enabled ? c.sweep.min : c.mode === 'periodic' ? app.num('frequency') : 0;
-    c.samples = c.mode === 'periodic' ? app.num('samples') : 128;
-    c.maxPeriods = c.mode === 'periodic' ? app.num('maxPeriods') : 100;
+    // DC models keep the periodic settings, so a later switch to AC restores them. In DC these fields are
+    // inactive and never block a run: an empty or out-of-range entry keeps the model's (or default) value.
+    const periodic = c.mode === 'periodic', defaults = TE.default2D(),
+      kept = (id, ok, ...fallbacks) => {
+        if (periodic) return app.num(id);
+        let value;
+        try {
+          value = app.num(id);
+        } catch {}
+        return [value, ...fallbacks].find(ok);
+      };
+    c.frequency = c.sweep.enabled ? c.sweep.min : kept('frequency', v => Number.isFinite(v) && v > 0, app.config.frequency, defaults.frequency);
+    c.samples = kept('samples', v => [64, 128, 256, 512, 1024].includes(v), app.config.samples, defaults.samples);
+    c.maxPeriods = kept('maxPeriods', v => Number.isInteger(v) && v >= 3 && v <= 1000, app.config.maxPeriods, defaults.maxPeriods);
     return c;
   };
   app.modes = function modes() {
@@ -249,6 +261,7 @@
         });
       }
     }
+    let warnings = [];
     if (!issues.length) {
       try {
         let draft = app.read();
@@ -262,6 +275,7 @@
         Object.assign(draft, g);
         issues.push(...TE.validate2DConfig(draft));
         if (draft.sweep?.enabled) TE.validateSweep(draft);
+        warnings = TE.modelWarnings(draft);
       } catch (e) {
         issues.push({
           path: 'model',
@@ -275,9 +289,18 @@
       e.setAttribute('aria-invalid', 'true');
       e.title = issue.message;
     }
-    const summary = app.$('validationSummary');
-    summary.hidden = !issues.length;
-    summary.innerHTML = issues.length ? '<strong>Correct these inputs before applying, exporting or running:</strong><ul>' + issues.slice(0, 10).map(e => `<li><b>${app.esc(e.path)}</b> — ${app.esc(e.message)}</li>`).join('') + '</ul>' + (issues.length > 10 ? `<small>${issues.length - 10} more issue(s) are highlighted in the form.</small>` : '') : '';
+    // Both boxes are polite live regions: rewrite them only when their text changes, so assistive
+    // technology announces a new problem once rather than on every keystroke.
+    const show = (id, html) => {
+      const box = app.$(id);
+      box.hidden = !html;
+      if (box.dataset.shown !== html) {
+        box.innerHTML = html;
+        box.dataset.shown = html;
+      }
+    };
+    show('validationSummary', issues.length ? '<strong>Correct these inputs before applying, exporting or running:</strong><ul>' + issues.slice(0, 10).map(e => `<li><b>${app.esc(e.path)}</b> — ${app.esc(e.message)}</li>`).join('') + '</ul>' + (issues.length > 10 ? `<small>${issues.length - 10} more issue(s) are highlighted in the form.</small>` : '') : '');
+    show('validationWarnings', warnings.length ? '<strong>Check before running (the model still runs):</strong><ul>' + warnings.map(w => `<li>${app.esc(w.message)}</li>`).join('') + '</ul>' : '');
     for (const id of ['run', 'save']) app.$(id).disabled = Boolean(app.worker) || issues.length > 0;
     let pending = false,
       signature = null;
@@ -304,9 +327,9 @@
     return {
       nx: app.num('nx'),
       ny: app.num('ny'),
-      lx: app.num('lx') / 1000,
-      ly: app.num('ly') / 1000,
-      depth: app.num('depth') / 1000
+      lx: app.scaledNum('lx', 3),
+      ly: app.scaledNum('ly', 3),
+      depth: app.scaledNum('depth', 3)
     };
   };
   app.meshChanged = function meshChanged(g) {
@@ -422,7 +445,7 @@
       material[key] = value;
     }
     TE.assert(source.color === undefined || /^#[0-9a-f]{6}$/i.test(source.color), 'Material color must use #RRGGBB.');
-    material.color = source.color ?? '#73d8d0';
+    material.color = TE.materialColor(source.color);
     return material;
   };
   app.importMaterialJson = async () => {
@@ -475,10 +498,10 @@
   // is missing, invalid or unsuitable (legs need the right Seebeck sign, copper must conduct, plates
   // and gaps must insulate).
   app.libraryCopies = {
-    'Bi2Te3.json': [m => m.alpha > 0, {name: 'Bi2Te3 (p-type benchmark)', rho: 7740, Cp: 154.4, k: 1.6, sigma: 1.1e5, beta: 0, alpha: 2e-4, alphaSlope: 0, hall: 3.121e-07, nernst: 1.59e-06, righiLeduc: 0.013, magnetoresistance: 0.000307, color: '#73d8d0'}],
-    'Bi2Te3_n_type.json': [m => m.alpha < 0, {name: 'Bi2Te3 n-type (illustrative)', rho: 7740, Cp: 154.4, k: 1.6, sigma: 1.1e5, beta: 0, alpha: -2e-4, alphaSlope: 0, hall: -3.121e-07, nernst: 1.59e-06, righiLeduc: -0.013, magnetoresistance: 0.000307, color: '#ae92d9'}],
+    'Bi2Te3.json': [m => m.alpha > 0, {name: 'Bi2Te3 (p-type)', rho: 7740, Cp: 154.4, k: 1.6, sigma: 1.1e5, beta: 0, alpha: 2e-4, alphaSlope: 0, hall: 3.121e-07, nernst: 1.59e-06, righiLeduc: 0.013, magnetoresistance: 0.000307, color: '#73d8d0'}],
+    'Bi2Te3_n_type.json': [m => m.alpha < 0, {name: 'Bi2Te3 n-type', rho: 7740, Cp: 154.4, k: 1.6, sigma: 1.1e5, beta: 0, alpha: -2e-4, alphaSlope: 0, hall: -3.121e-07, nernst: 1.59e-06, righiLeduc: -0.013, magnetoresistance: 0.000307, color: '#ae92d9'}],
     'Copper.json': [m => m.sigma > 1e6, {name: 'Copper', rho: 8960, Cp: 385, k: 401, sigma: 57478566.4581124, beta: 0.004176967424511028, alpha: 1.83e-6, alphaSlope: 0, hall: -5.17e-11, nernst: 0, righiLeduc: -0.002972, magnetoresistance: 8.83e-06, color: '#edaf6e'}],
-    'Alumina.json': [m => m.sigma < 1e-6, {name: 'Alumina (96% Al2O3)', rho: 3750, Cp: 750, k: 24, sigma: 1e-12, beta: 0, alpha: 0, alphaSlope: 0, hall: 0, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#d9d4c7'}],
+    'Alumina.json': [m => m.sigma < 1e-6, {name: 'Alumina (Al2O3)', rho: 3750, Cp: 750, k: 24, sigma: 1e-12, beta: 0, alpha: 0, alphaSlope: 0, hall: 0, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#d9d4c7'}],
     'Air.json': [m => m.sigma < 1e-6, {name: 'Air (1 atm, still)', rho: 1.1614, Cp: 1007, k: .0263, sigma: 1e-14, beta: 0, alpha: 0, alphaSlope: 0, hall: 0, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#46535f'}]
   };
   // Reads one library material. Served over HTTP, the file in lib/ is read (an invalid file is reported,

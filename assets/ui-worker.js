@@ -71,6 +71,10 @@
     if (previous) app.restoreResultView(previous, r);
     app.tab('results');
   };
+  // What to do about a cycle budget that ran out. Without a thermal anchor more cycles cannot help.
+  app.unconvergedAdvice = (config, message = '') => TE.hasThermalAnchor(config)
+    ? 'Raise Maximum cycles on the Solver tab or refine the time steps, then run again.'
+    : message.includes(TE.anchorHint) ? '' : TE.anchorHint;
   app.stopClock = function stopClock() {
     clearInterval(app.clock);
     app.clock = null;
@@ -163,6 +167,8 @@
     app.$('badge').className = '';
     app.$('status').textContent = 'Solving coupled 2D transport…';
     app.started = performance.now();
+    app.statusKey = null; // throttles the live status text during the run
+    app.statusAt = 0;
     app.checkpoint = null;
     app.$('elapsed').textContent = '0.0 s';
     app.$('runProgress').hidden = false;
@@ -192,7 +198,8 @@
       app.accept(last);
       app.$('badge').textContent = 'UNCONVERGED';
       app.$('badge').className = 'warning';
-      app.$('status').textContent = message + ' Showing the last cycle; its harmonics are provisional. Raise Maximum cycles on the Solver tab or refine the time steps, then run again.';
+      const advice = app.unconvergedAdvice(last.config, message);
+      app.$('status').textContent = message + ' Showing the last cycle; its harmonics are provisional.' + (advice ? ' ' + advice : '');
     };
     try {
       const url = URL.createObjectURL(new Blob([TE.workerSource()], {
@@ -216,8 +223,15 @@
           app.checkpoint = null;
           app.$('status').textContent = `Frequency ${data.index + 1}/${data.total}: ${app.fmt(data.frequency)} Hz`;
         } else if (data.type === 'progress') {
-          const prefix = app.activeSweep ? `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz · ` : '';
-          app.$('status').textContent = prefix + `Cycle ${data.progress.cycle}/${data.progress.maxPeriods} · step ${data.progress.step}/${data.progress.samples}${data.progress.error === null ? '' : ' · normalized error ' + data.progress.error.toExponential(2)}`;
+          // The status line is a live region: rewrite it for a new cycle or frequency, otherwise at most once
+          // a second, so screen readers are not flooded. The progress bar follows every message.
+          const now = performance.now(), key = `${data.index ?? 0}:${data.progress.cycle}`;
+          if (key !== app.statusKey || now - app.statusAt >= 1000) {
+            app.statusKey = key;
+            app.statusAt = now;
+            const prefix = app.activeSweep ? `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz · ` : '';
+            app.$('status').textContent = prefix + `Cycle ${data.progress.cycle}/${data.progress.maxPeriods} · step ${data.progress.step}/${data.progress.samples}${data.progress.error === null ? '' : ' · normalized error ' + data.progress.error.toExponential(2)}`;
+          }
           app.$('runProgress').max = app.activeSweep ? data.total : data.progress.maxPeriods;
           app.$('runProgress').value = app.activeSweep ? data.index + (data.progress.cycle - 1 + data.progress.step / data.progress.samples) / data.progress.maxPeriods : data.progress.cycle - 1 + data.progress.step / data.progress.samples;
           app.$('runProgress').title = 'Completed frequencies plus current cycle budget; convergence can finish earlier.';
@@ -240,14 +254,14 @@
           app.sweepResult = app.activeSweep;
           app.refreshSweepPoints();
           app.drawBode();
-          if (!data.result.converged) app.$('status').textContent = `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz did not converge in ${data.result.periods} cycles. Kept as unconverged (excluded from Bode); continuing.`;
+          if (!data.result.converged) app.$('status').textContent = `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz did not converge in ${data.result.periods} cycles. Kept as unconverged (excluded from Bode); continuing.${TE.hasThermalAnchor(data.result.config) ? '' : ' ' + TE.anchorHint}`;
         } else if (data.type === 'sweepDone') {
           app.worker.terminate();
           app.worker = null;
           app.stopClock();
           app.lock(false);
           const unconverged = app.activeSweep.results.filter(r => !r.converged).length;
-          app.finishSweep(unconverged ? `Sweep completed with ${unconverged} unconverged point(s), excluded from Bode.` : 'Sweep completed.', true);
+          app.finishSweep(unconverged ? `Sweep completed with ${unconverged} unconverged point(s), excluded from Bode.${TE.hasThermalAnchor(app.activeSweep.config) ? '' : ' ' + TE.anchorHint}` : 'Sweep completed.', true);
         } else if (data.type === 'error' && data.unconverged && app.checkpoint && !app.activeSweep) finishUnconverged(data.message);
         else if (data.type === 'sweepError' || data.type === 'error') finishError('Calculation failed: ' + data.message);else if (data.type === 'result') {
           try {

@@ -170,8 +170,7 @@
   document.querySelectorAll('.settings').forEach(e => {
     e.addEventListener('input', event => {
       if (event.target.type === 'number') {
-        delete event.target.dataset.rawNumber;
-        delete event.target.dataset.displayNumber;
+        for (const key of ['rawNumber', 'displayNumber', 'siNumber', 'siDisplay']) delete event.target.dataset[key];
       }
       app.modes();
       app.dirty();
@@ -210,10 +209,11 @@
     }, 120);
   });
 
+  // Used only when neither lib/catalog.js nor lib/index.json can be read; must equal lib/index.json.
+  app.libraryFallback = ["Air.json", "Alumina.json", "Aluminum.json", "Bi2Te3.json", "Bi2Te3_n_type.json", "Bismuth.json", "Copper.json", "Ge_n_1e15.json", "Ge_n_1e19.json", "Ge_p_1e15.json", "Ge_p_1e19.json", "Ge_p_reference.json", "Gold.json", "PbTe.json", "Platinum.json", "Si_n_1e15.json", "Si_n_1e19.json", "Si_p_1e15.json", "Si_p_1e19.json"];
   const initPresets = async () => {
     const catalog = globalThis.TE_MATERIAL_CATALOG ?? null;
-    const known = ["Air.json", "Alumina.json", "Aluminum.json", "Bi2Te3.json", "Bi2Te3_n_type.json", "Bismuth.json", "Copper.json", "Ge_n_1e15.json", "Ge_n_1e19.json", "Ge_p_1e15.json", "Ge_p_1e19.json", "Gold.json", "PbTe.json", "Platinum.json", "Si_n_1e15.json", "Si_n_1e19.json", "Si_p_1e15.json", "Si_p_1e19.json"];
-    let files = catalog ? Object.keys(catalog) : known;
+    let files = catalog ? Object.keys(catalog) : app.libraryFallback;
     // Opened from disk, browsers block reading lib/: the list then comes from lib/catalog.js.
     if (globalThis.location?.protocol !== 'file:') try {
       const res = await fetch('lib/index.json');
@@ -233,7 +233,8 @@
   };
   initPresets();
 
-  app.presetShown = app.$('preset').value;
+  // Name the example that is actually loaded: browsers (Firefox) may restore an earlier selection on reload.
+  app.showPreset(app.defaultPreset);
   app.fill();
   globalThis.TE_APP_READY = true;
 })(globalThis.TEApp);

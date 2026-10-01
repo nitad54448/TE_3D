@@ -116,7 +116,7 @@
       h
     } = f;
     for (let j = 0; j < c.ny; j++) for (let i = 0; i < c.nx; i++) {
-      ctx.fillStyle = c.materials[c.materialMap[j * c.nx + i]]?.color || '#aaa';
+      ctx.fillStyle = TE.materialColor(c.materials[c.materialMap[j * c.nx + i]]?.color);
       ctx.globalAlpha = .75;
       ctx.fillRect(left + i * w / c.nx, top + (c.ny - 1 - j) * h / c.ny, w / c.nx, h / c.ny);
       ctx.globalAlpha = 1;
@@ -147,13 +147,7 @@
     }
     ctx.restore();
   };
-  app.color = function color(t) {
-    const stops = [[24, 44, 89], [36, 107, 153], [87, 182, 173], [227, 193, 110], [244, 141, 75]],
-      u = Math.max(0, Math.min(1, t)) * 4,
-      i = Math.min(3, Math.floor(u)),
-      f = u - i;
-    return `rgb(${stops[i].map((v, k) => Math.round(v + (stops[i + 1][k] - v) * f)).join(',')})`;
-  };
+  app.color = TE.heatColor; // shared with the exported figures
   app.chart = function chart(id, x, y, label, xLabel = 'Time · ms') {
     const colors = app.plotColors(), el = app.$(id),
       W = el.clientWidth || 450,
