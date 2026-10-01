@@ -8,7 +8,7 @@
   };
   app.materialsForm = function materialsForm() {
     const canRemove = app.config.materials.length > 1;
-    app.$('materialCards').innerHTML = app.config.materials.map((m, i) => `<div class="material-card" data-material="${i}" style="--material-color:${/^#[0-9a-f]{6}$/i.test(m.color) ? m.color : '#73d8d0'}"><div class="name-row"><label>Material ${i + 1}<input data-key="name" value="${app.esc(m.name)}"></label><label>Color<input type="color" data-key="color" value="${app.esc(m.color)}"></label><button type="button" class="remove-material" data-remove="${i}" title="Remove material" ${canRemove ? '' : 'disabled'}>✕</button></div><div class="grid2">${app.input('Density', 'rho', m.rho, 'kg/m³')}${app.input('Heat capacity', 'Cp', m.Cp, 'J/kg K')}${app.input('Thermal conductivity', 'k', m.k, 'W/m K')}${app.input('Electrical conductivity', 'sigma', m.sigma, 'S/m')}${app.input('Resistivity slope β', 'beta', m.beta ?? 0, '1/K')}${app.input('Seebeck α₃₀₀', 'alpha', m.alpha * 1e6, 'µV/K')}${app.input('Seebeck slope α′', 'alphaSlope', (m.alphaSlope ?? 0) * 1e6, 'µV/K²')}${app.input('Hall coefficient R_H', 'hall', m.hall ?? 0, 'm³/C')}${app.input('Nernst coefficient N', 'nernst', m.nernst ?? 0, 'V/(K·T)')}${app.input('Righi–Leduc S', 'righiLeduc', m.righiLeduc ?? 0, '1/T')}${app.input('Magnetoresistance m', 'magnetoresistance', m.magnetoresistance ?? 0, '1/T²')}</div></div>`).join('');
+    app.$('materialCards').innerHTML = app.config.materials.map((m, i) => `<div class="material-card" data-material="${i}" style="--material-color:${/^#[0-9a-f]{6}$/i.test(m.color) ? m.color : '#73d8d0'}"><div class="name-row"><label>Material ${i + 1}<input data-key="name" maxlength="200" value="${app.esc(m.name)}"></label><label>Color<input type="color" data-key="color" value="${app.esc(m.color)}"></label><button type="button" class="remove-material" data-remove="${i}" title="Remove material" ${canRemove ? '' : 'disabled'}>✕</button></div><div class="grid2">${app.input('Density', 'rho', m.rho, 'kg/m³')}${app.input('Heat capacity', 'Cp', m.Cp, 'J/kg K')}${app.input('Thermal conductivity', 'k', m.k, 'W/m K')}${app.input('Electrical conductivity', 'sigma', m.sigma, 'S/m')}${app.input('Resistivity slope β', 'beta', m.beta ?? 0, '1/K')}${app.input('Seebeck α₃₀₀', 'alpha', m.alpha * 1e6, 'µV/K')}${app.input('Seebeck slope α′', 'alphaSlope', (m.alphaSlope ?? 0) * 1e6, 'µV/K²')}${app.input('Hall coefficient R_H', 'hall', m.hall ?? 0, 'm³/C')}${app.input('Nernst coefficient N', 'nernst', m.nernst ?? 0, 'V/(K·T)')}${app.input('Righi–Leduc S', 'righiLeduc', m.righiLeduc ?? 0, '1/T')}${app.input('Magnetoresistance m', 'magnetoresistance', m.magnetoresistance ?? 0, '1/T²')}</div></div>`).join('');
     app.palette();
     if (app.updateMaterialCap) app.updateMaterialCap();
   };
@@ -193,6 +193,7 @@
       k = j * app.config.nx + i;
     if (app.config.materialMap[k] === app.selected) return;
     app.config.materialMap[k] = app.selected;
+    app.paintChanged = true; // validated once when the stroke ends
     app.dirty();
     // Coalesce redraws while dragging: at most one full canvas redraw per frame.
     if (!app.geometryFrame) app.geometryFrame = requestAnimationFrame(() => {
@@ -347,6 +348,7 @@
     app.config.materialMap.fill(app.selected);
     app.drawGeometry();
     app.dirty();
+    app.validateUI(); // the electrode checks depend on the material map
   };
   app.updateMaterialCap = () => {
     const atLimit = app.config.materials.length >= 12;
@@ -479,26 +481,43 @@
     'Alumina.json': [m => m.sigma < 1e-6, {name: 'Alumina (96% Al2O3)', rho: 3750, Cp: 750, k: 24, sigma: 1e-12, beta: 0, alpha: 0, alphaSlope: 0, hall: 0, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#d9d4c7'}],
     'Air.json': [m => m.sigma < 1e-6, {name: 'Air (1 atm, still)', rho: 1.1614, Cp: 1007, k: .0263, sigma: 1e-14, beta: 0, alpha: 0, alphaSlope: 0, hall: 0, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#46535f'}]
   };
+  // Reads one library material. Served over HTTP, the file in lib/ is read (an invalid file is reported,
+  // never replaced). Opened from disk, browsers block reading lib/, so the record comes from
+  // lib/catalog.js, the offline snapshot that build_catalog.py writes next to index.json.
+  app.libraryRecord = async function libraryRecord(file) {
+    const catalog = globalThis.TE_MATERIAL_CATALOG,
+      offline = globalThis.location?.protocol === 'file:';
+    if (!offline) {
+      let text = null;
+      try {
+        const res = await fetch('lib/' + file);
+        if (res.ok) text = await res.text();
+      } catch {}
+      if (text !== null) return {material: app.parseMaterialJson(text), via: 'file'};
+    }
+    TE.assert(catalog && Object.hasOwn(catalog, file), `Could not load lib/${file}. ${offline ? 'Run python lib/build_catalog.py to rebuild lib/catalog.js, or use Add material json.' : 'Check that the file exists in lib/.'}`);
+    return {material: app.parseMaterialJson(JSON.stringify(catalog[file])), via: 'catalog'};
+  };
   // Returns the materials in the order given and a description of where each came from.
   app.loadLibraryMaterials = async function loadLibraryMaterials(files) {
     const loaded = await Promise.all(files.map(async file => {
       const [ok, fallback] = app.libraryCopies[file];
       try {
-        const res = await fetch('lib/' + file);
-        if (!res.ok) throw new Error();
-        const material = app.parseMaterialJson(await res.text());
+        const {material, via} = await app.libraryRecord(file);
         if (!ok(material)) throw new Error();
-        return {material, file};
+        return {material, file, via};
       } catch {
-        return {material: {...fallback}, file: null};
+        return {material: {...fallback}, file: null, via: null};
       }
     }));
-    const library = loaded.filter(v => v.file).map(v => 'lib/' + v.file),
-      builtIn = loaded.filter(v => !v.file).map(v => v.material.name);
-    return {
-      materials: loaded.map(v => v.material),
-      source: (library.length ? 'from ' + library.join(', ') : '') + (library.length && builtIn.length ? '; ' : '') + (builtIn.length ? 'built-in copies for ' + builtIn.join(', ') : '')
-    };
+    const library = loaded.filter(v => v.via === 'file').map(v => 'lib/' + v.file),
+      snapshot = loaded.filter(v => v.via === 'catalog').map(v => v.file),
+      builtIn = loaded.filter(v => !v.via).map(v => v.material.name),
+      parts = [];
+    if (library.length) parts.push('from ' + library.join(', '));
+    if (snapshot.length) parts.push('from the lib/catalog.js copies of ' + snapshot.join(', '));
+    if (builtIn.length) parts.push('built-in copies for ' + builtIn.join(', '));
+    return {materials: loaded.map(v => v.material), source: parts.join('; ')};
   };
   app.moduleMaterials = async function moduleMaterials() {
     const result = await app.loadLibraryMaterials(['Bi2Te3.json', 'Bi2Te3_n_type.json', 'Copper.json', 'Alumina.json', 'Air.json']),
@@ -563,6 +582,36 @@
       sweep: {enabled: true, min: .003, max: 30, points: 13, spacing: 'log'}
     };
   };
+  // Hall measurement on p-type Ge (the settings of a saved project): 1 mA DC between narrow contacts at
+  // the middle of the top and bottom edges of a 4 mm × 10 mm plate, 0.175 mm thick, in Bz = 1 T; Hall
+  // probes at mid-height on the side edges, which are held at 300 K (isothermal Hall voltage).
+  app.hallPGeConfig = function hallPGeConfig() {
+    const fixed = () => ({kind: 'temperature', value: {bias: 300, amplitude: 0, phase: 0}, h: 0}),
+      flux = () => ({kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0});
+    return {
+      ...TE.default2D(),
+      description: 'Hall measurement on p-type germanium (Ge-p, reference: 8.4·10¹⁷ cm⁻³ acceptors, R_H = +7.43·10⁻⁶ m³/C). ' +
+        '1 mA DC enters through a 0.4 mm contact at the middle of the top edge and leaves through one at the middle of the bottom edge of a 4 mm × 10 mm plate, 0.175 mm thick, in Bz = 1 T out of the screen. ' +
+        'The Hall probes sit at mid-height on the side edges, P+ right and P− left. Holes drifting down are pushed toward the left edge, so V_H = V(P+) − V(P−) = −R_H·I·B/t = −42.5 µV for a long bar; ' +
+        'the narrow contacts barely short the Hall field at mid-height, and the computed V_H is −42.2 µV. The side edges are held at 300 K, so no Ettingshausen temperature difference reaches the probes (isothermal Hall voltage). ' +
+        'Try: reverse the field or the current (V_H changes sign); widen the contacts to the full edge (they short the Hall field: −41.1 µV); move a probe off mid-height (a misalignment voltage appears, removed by averaging +B and −B); ' +
+        'an AC drive for a lock-in measurement. Material values are model estimates; see the material notes in Ge_p_reference.json.',
+      mode: 'steady',
+      nx: 20,
+      ny: 50,
+      lx: .004,
+      ly: .01,
+      depth: .000175,
+      magneticField: 1,
+      hallProbes: {plus: {x: 1, y: .5}, minus: {x: 0, y: .5}},
+      materials: [{name: 'Ge-p, reference', color: '#b07a96', rho: 5323, Cp: 310, k: 58, sigma: 8340.3, beta: .00271, alpha: .0003282, alphaSlope: 4.21e-7,
+        hall: 7.43e-6, nernst: 3.08e-6, righiLeduc: 4.73e-5, magnetoresistance: .00134}],
+      materialMap: Array(20 * 50).fill(0),
+      thermal: {left: fixed(), right: fixed(), bottom: flux(), top: flux()},
+      electrical: {kind: 'current', value: {bias: .001, amplitude: 0, phase: 0}, sourceSide: 'top', sourceRange: [.45, .55], sinkSide: 'bottom', sinkRange: [.45, .55]},
+      sweep: {enabled: false}
+    };
+  };
   // The Example selector names the loaded example until the model changes; then it shows Custom
   // (a status-only entry). Choosing any example, including the same one, loads it again.
   app.showPreset = value => {
@@ -572,7 +621,7 @@
   app.loadPreset = async () => {
     const token = ++app.presetToken,
       p = app.$('preset').value,
-      build = {module: app.moduleConfig, rc: app.rcConfig}[p];
+      build = {module: app.moduleConfig, rc: app.rcConfig, 'hall-pge': app.hallPGeConfig}[p];
     if (build) {
       try {
         const config = await build();
@@ -640,6 +689,8 @@
         app.config.electrical.kind = 'open_circuit';
       }
     }
+    // BDF2 shifts harmonic n by about (2πn/N)²/3: 0.7 % at 3ω with 128 steps, 0.2 % with 256.
+    if (p === 'nonlinear') app.config.samples = 256;
     if (p === 'hall') {
       const flux = () => ({kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0});
       Object.assign(app.config, {

@@ -16,7 +16,7 @@
     "magnetoresistance": "1/T^2"
   },
   "material": {
-    "name": "PbTe (room-temperature model)",
+    "name": "PbTe (RT model)",
     "rho": 8160,
     "Cp": 151,
     "k": 1.46,

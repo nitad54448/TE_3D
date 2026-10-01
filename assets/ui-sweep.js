@@ -127,6 +127,12 @@
   app.drawBode = function drawBode() {
     if (!app.sweepResult?.results.length) return;
     app.$('bodeCard').hidden = false;
+    // V(P+) − V(P−) is a Hall voltage only when the field acts transversely (see TE.hallStatus).
+    const hall = TE.hallStatus(app.sweepResult.config),
+      hallOption = app.$('bodeQuantity').querySelector('option[value="hallVoltage"]');
+    hallOption.disabled = !hall.active;
+    hallOption.title = hall.reason;
+    if (!hall.active && app.$('bodeQuantity').value === 'hallVoltage') app.$('bodeQuantity').value = 'terminalVoltage';
     const rs = app.sweepResult.results,
       imp = app.$('bodeQuantity').value === 'impedance';
     if (imp) {

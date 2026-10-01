@@ -22,11 +22,17 @@ globalThis.TEApp = {};
   app.probe = 0;
   app.started = 0;
   app.paint = false;
+  app.paintChanged = false; // a paint stroke changed the material map: validate when it ends
   app.geomFrame = null;
   app.resultFrame = null;
   app.fmt = v => Math.abs(v) > 1e4 || v !== 0 && Math.abs(v) < .001 ? v.toExponential(3) : Number(v.toPrecision(5)).toString();
   app.amp = z => Math.hypot(z.re, z.im);
   app.phase = z => Math.atan2(z.im, z.re) * 180 / Math.PI;
+  // Phase text with fixed decimals; a value that rounds to zero is shown as 0, never as -0.000.
+  app.degrees = (z, digits = 3) => {
+    const text = app.phase(z).toFixed(digits);
+    return Number(text) === 0 ? (0).toFixed(digits) : text;
+  };
   app.num = id => {
     const e = app.$(id);
     TE.assert(e.value.trim() !== '', `${id}: value required.`);

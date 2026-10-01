@@ -12,7 +12,7 @@ This folder holds the material presets of Thermoelectric Lab. Keep it as `lib/` 
   - silicon and germanium model presets, p- and n-type, lightly (10¹⁵ cm⁻³) and heavily (10¹⁹ cm⁻³) doped: `Si_n_1e15`, `Si_n_1e19`, `Si_p_1e15`, `Si_p_1e19`, `Ge_n_1e15`, `Ge_n_1e19`, `Ge_p_1e15`, `Ge_p_1e19`.
 - **`index.json`**: the list of files the application offers. It is read at startup.
 - **`build_catalog.py`**: rebuilds `index.json` after you add, rename or remove files.
-- **`catalog.js`**: a JavaScript snapshot of all records, also written by `build_catalog.py`. The application does not load it.
+- **`catalog.js`**: a JavaScript snapshot of all records, also written by `build_catalog.py`. `index.html` loads it, so the presets and examples also work when the page is opened directly from disk.
 
 Every material file documents its values in `notes` and `sources`. The values are starting points, not specimen-specific calibrations. A slope or magnetic coefficient of 0 means the effect is assumed constant or switched off, not that it was measured to be zero.
 
@@ -20,7 +20,7 @@ Every material file documents its values in `notes` and `sources`. The values ar
 
 On the **Materials** tab:
 
-- **Select preset…** lists the files in `index.json`, shown without `.json` and with spaces for underscores. Choosing one reads the file and appends it as a new material card, which you can edit like any other. The selector then returns to *Select preset…*, and existing cards are unchanged.
+- **Select preset…** lists the files in `index.json` by material name (a file missing from `catalog.js` is shown by its file name, without `.json` and with spaces for underscores). Choosing one reads the file and appends it as a new material card, which you can edit like any other. The selector then returns to *Select preset…*, and existing cards are unchanged.
 - **Add material json** adds one material file from anywhere on your computer, up to 64 KB, as a new card. The file is not copied into `lib/`.
 - **+ Add material** adds an empty card to fill in by hand.
 
@@ -28,7 +28,7 @@ A model holds at most 12 materials. The preset list and the two add buttons are 
 
 The values are copied into the model when a material is added. A saved project therefore carries its materials with it: it opens and runs without the library, and later edits to the library never change an existing model. To use updated library values, add the preset again and paint it where it is needed.
 
-**Serving the application.** The application reads `lib/` over HTTP, so serve the folder with any static web server, for example `python3 -m http.server 8000`. When `index.html` is opened directly from disk, browsers block these reads. **Select preset…** then still lists the files but cannot load them, so use **Add material json** instead. The thermoelectric module and RC circuit examples use built-in copies of the five library materials they need (`Bi2Te3`, `Bi2Te3_n_type`, `Copper`, `Alumina`, `Air`), so they still work from disk. If you change one of these five files, update its copy in `assets/ui-model.js` (`app.libraryCopies`) as well; the regression suite checks that each copy equals its file.
+**Serving the application.** Served over HTTP (for example `python3 -m http.server 8000`), the application reads the files in `lib/`. When `index.html` is opened directly from disk, browsers block these reads, so the list and the records come from `catalog.js` instead; rebuild it with `build_catalog.py` after editing any file, or the page opened from disk keeps the old values. The thermoelectric module and RC circuit examples also carry built-in copies of the five library materials they need (`Bi2Te3`, `Bi2Te3_n_type`, `Copper`, `Alumina`, `Air`), used only when a file is missing or unsuitable. If you change one of these five files, update its copy in `assets/ui-model.js` (`app.libraryCopies`) as well; the regression suite checks that each copy equals its file.
 
 ## File format
 
@@ -78,7 +78,7 @@ The `material` object:
 
 1. Copy one of the material files, give it a new filename and edit the values, notes and sources.
 2. Keep `"format": "TE_2D_material"` and `"version": 1`: `build_catalog.py` rejects other values.
-3. Run `python lib/build_catalog.py`. It checks every file and rewrites `index.json` (and `catalog.js`), listing the files alphabetically. You can also edit the `files` array of `index.json` by hand; no directory listing or server-side code is needed.
+3. Run `python lib/build_catalog.py`. It checks every file and rewrites `index.json` and `catalog.js`, listing the files alphabetically. `catalog.js` is what the page reads when opened from disk. When the page is served over HTTP you can also edit the `files` array of `index.json` by hand; no directory listing or server-side code is needed.
 4. Reload the application.
 
 ## Magnetic coefficients and the Si and Ge presets

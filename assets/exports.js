@@ -60,6 +60,15 @@
       const pts = vertical ? [x + (side === 'right' ? w : 0), y + h * (1 - a), x + (side === 'right' ? w : 0), y + h * (1 - d)] : [x + w * a, y + (side === 'bottom' ? h : 0), x + w * d, y + (side === 'bottom' ? h : 0)];
       b += `<line x1="${pts[0]}" y1="${pts[1]}" x2="${pts[2]}" y2="${pts[3]}" stroke="${name === 'source' ? '#111' : '#c23c91'}" stroke-width="3"/>`;
     }
+    // Hall probes P+ and P− (yellow squares), labelled on the side facing the domain interior.
+    const probes = TE.hallProbeNodes(c);
+    for (const [node, label] of [[probes.plus, 'P+'], [probes.minus, 'P−']]) {
+      const i = node % (c.nx + 1),
+        j = Math.floor(node / (c.nx + 1)),
+        px = x + i / c.nx * w,
+        py = y + h - j / c.ny * h;
+      b += `<rect x="${px - 3}" y="${py - 3}" width="6" height="6" fill="#ffd166" stroke="#142f43" stroke-width="1"/><text x="${px}" y="${j < c.ny / 2 ? py - 5 : py + 11}" font-size="8" font-weight="bold" text-anchor="middle" fill="#142f43">${label}</text>`;
+    }
     if (!geometry) {
       for (let i = 0; i < 100; i++) b += `<rect x="${70 + 4 * i}" y="222" width="4.1" height="10" fill="${rgb(i / 99)}"/>`;
       b += `<text x="70" y="247" font-size="10">${esc(fmt(lo))}</text><text x="470" y="247" text-anchor="end" font-size="10">${esc(fmt(hi))}</text>`;
@@ -105,21 +114,30 @@
       };
     const footer = `<p class="foot">${esc(status)} · Peak phasors (not RMS) · Computed model; current input edits are excluded.</p>`;
     const page = (title, body) => `<section class="page"><header>THERMOELECTRIC LAB · FULL RESULTS</header><h1>${esc(title)}</h1>${body}${footer}</section>`;
-    let html = page('Model and convergence', `${c.description ? '<p>' + esc(c.description) + '</p>' : ''}<p class="status">${esc(status)}</p><p>Exported ${esc(createdAt)}</p>${table(['Setting', 'Value'], [['Mode / method', r.method], ['Dimensions Lx × Ly × depth (m)', [c.lx, c.ly, c.depth].map(fmt).join(' × ')], ['Elements Nx × Ny', c.nx + ' × ' + c.ny], ['Node count', r.mesh.x.length], ['Magnetic field Bz (T)', c.magneticField ?? 0], ['Hall probes P+ / P− (x, y in %)', (({plus, minus}) => `(${fmt(100 * plus.x)}, ${fmt(100 * plus.y)}) / (${fmt(100 * minus.x)}, ${fmt(100 * minus.y)})`)(c.hallProbes ?? {plus: {x: .5, y: 0}, minus: {x: .5, y: 1}})], ['Drive frequency (Hz)', periodic(r) ? r.frequency : 0], ['Samples per cycle', periodic(r) ? r.samples : 'Not applicable'], ['Completed cycles / budget', periodic(r) ? r.periods + ' / ' + c.maxPeriods : 'Not applicable'], ['Normalized cycle error (converged ≤ 1)', r.periodicError], ['Temperature cycle error', r.diagnostics?.temperatureCycleError], ['Terminal harmonic error', r.diagnostics?.terminalHarmonicError], ['Normalized heat residual', r.diagnostics?.heatResidualNormalized], ['Maximum free-node heat residual (W)', r.diagnostics?.heatResidualWatts], ['Terminal voltage tolerance (V)', periodic(r) ? r.diagnostics?.harmonicVoltageAtol : 'Not applicable'], ['Cycle extrapolations', periodic(r) ? r.diagnostics?.cycleExtrapolations ?? 0 : 'Not applicable'], ['Steady energy residual (W)', r.energyResidual], ['Saved cycle start (s)', r.cycleStartTime ?? 0], ['Selected probe node', probe], ['Probe x, y (m)', fmt(r.mesh.x[probe]) + ', ' + fmt(r.mesh.y[probe])]])}${add('materials', gridSvg(r, 'materials'))}<p>${c.materials.map((m, i) => `<span style="display:inline-block;margin-right:12px"><b style="color:${/^#[0-9a-f]{6}$/i.test(m.color) ? m.color : '#73d8d0'}">■</b> ${i}: ${esc(m.name)}</span>`).join('')}</p><p>Black contact: source; pink: sink. Coordinates use x right, y up. Depth is constant. All reported fields belong to the saved solution.</p><p>${r.converged ? 'Check spatial/time refinement before interpreting small harmonics.' : 'These harmonics describe a transient cycle, not an established periodic state. Stopped plots are not closed artificially.'}</p>`);
+    let html = page('Model and convergence', `${c.description ? '<p>' + esc(c.description) + '</p>' : ''}<p class="status">${esc(status)}</p><p>Exported ${esc(createdAt)}</p>${table(['Setting', 'Value'], [['Mode / method', periodic(r) ? 'Periodic · BDF2 / nonlinear Picard' : 'Steady · nonlinear Picard'], ['Linear solvers', TE.linearSolvers(c)], ['Dimensions Lx × Ly × depth (m)', [c.lx, c.ly, c.depth].map(fmt).join(' × ')], ['Elements Nx × Ny', c.nx + ' × ' + c.ny], ['Node count', r.mesh.x.length], ['Magnetic field Bz (T)', c.magneticField ?? 0], ['Hall probes P+ / P− (x, y in %)', (({plus, minus}) => `(${fmt(100 * plus.x)}, ${fmt(100 * plus.y)}) / (${fmt(100 * minus.x)}, ${fmt(100 * minus.y)})`)(c.hallProbes ?? {plus: {x: .5, y: 0}, minus: {x: .5, y: 1}})], ['Drive frequency (Hz)', periodic(r) ? r.frequency : 0], ['Samples per cycle', periodic(r) ? r.samples : 'Not applicable'], ['Completed cycles / budget', periodic(r) ? r.periods + ' / ' + c.maxPeriods : 'Not applicable'], ['Normalized cycle error (converged ≤ 1)', r.periodicError], ['Temperature cycle error', r.diagnostics?.temperatureCycleError], ['Terminal harmonic error', r.diagnostics?.terminalHarmonicError], ['Normalized heat residual', r.diagnostics?.heatResidualNormalized], ['Maximum free-node heat residual (W)', r.diagnostics?.heatResidualWatts], ['Terminal voltage tolerance (V)', periodic(r) ? r.diagnostics?.harmonicVoltageAtol : 'Not applicable'], ['Cycle extrapolations', periodic(r) ? r.diagnostics?.cycleExtrapolations ?? 0 : 'Not applicable'], ['Steady energy residual (W)', r.energyResidual], ['Saved cycle start (s)', r.cycleStartTime ?? 0], ['Selected probe node', probe], ['Probe x, y (m)', fmt(r.mesh.x[probe]) + ', ' + fmt(r.mesh.y[probe])]])}${add('materials', gridSvg(r, 'materials'))}<p>${c.materials.map((m, i) => `<span style="display:inline-block;margin-right:12px"><b style="color:${/^#[0-9a-f]{6}$/i.test(m.color) ? m.color : '#73d8d0'}">■</b> ${i}: ${esc(m.name)}</span>`).join('')}</p><p>Black contact: source; pink: sink; yellow squares: Hall probes P+ and P−. Coordinates use x right, y up. Depth is constant. All reported fields belong to the saved solution.</p><p>${r.converged ? 'Check spatial/time refinement before interpreting small harmonics.' : 'These harmonics describe a transient cycle, not an established periodic state. Stopped plots are not closed artificially.'}</p>`);
     html += page('Materials and boundary conditions', table(['ID', 'Name', 'ρ kg/m³', 'Cp J/(kg K)', 'k W/(m K)', 'σ S/m', 'α V/K', 'β 1/K', 'α′ V/K²'], c.materials.map((m, i) => [i, m.name, m.rho, m.Cp, m.k, m.sigma, m.alpha, m.beta ?? 0, m.alphaSlope ?? 0])) + table(['ID', 'Name', 'Hall R_H m³/C', 'Nernst N V/(K·T)', 'Righi–Leduc S 1/T', 'Magnetoresistance m 1/T²'], c.materials.map((m, i) => [i, m.name, m.hall ?? 0, m.nernst ?? 0, m.righiLeduc ?? 0, m.magnetoresistance ?? 0])) + `<p>Properties referenced to 300 K. ρₑ(T) = [1 + β(T − 300)] / σ₃₀₀; α(T) = α₃₀₀ + α′(T − 300). Other properties are constant in the editor. In a field Bz the resistivity along the current is ρₑ(T)(1 + mB²); R_H, N and S are constant (see the Magnetic field page).</p>` + table(['Thermal side', 'Kind', 'DC', 'AC peak', 'Phase °', 'h W/(m² K)'], Object.entries(c.thermal).map(([s, b]) => [s, b.kind, typeof b.value === 'number' ? b.value : b.value.bias ?? 0, typeof b.value === 'number' ? 0 : b.value.amplitude ?? 0, typeof b.value === 'number' ? 0 : b.value.phase ?? 0, b.h ?? 0])) + `<p>Temperature/ambient values in K; flux in W/m², positive outward and including Peltier transport (and, in a field, Ettingshausen transport). Steady mode ignores AC terms.</p>` + table(['Electrical setting', 'Value'], [['Mode', c.electrical.kind], ['DC drive', typeof c.electrical.value === 'number' ? c.electrical.value : c.electrical.value.bias ?? 0], ['AC peak', typeof c.electrical.value === 'number' ? 0 : c.electrical.value.amplitude ?? 0], ['Phase (°)', typeof c.electrical.value === 'number' ? 0 : c.electrical.value.phase ?? 0], ...['source', 'sink'].map(s => [s, c.electrical[s + 'Side'] + '; ' + c.electrical[s + 'Range'].map(v => fmt(100 * v) + '%').join(' to ')])]) + `<p>Drive units: A for current, V for voltage. Open circuit enforces zero net terminal current. Sink V = 0; terminal voltage U = V(source) − V(sink). Positive current I enters the source; absorbed power = U·I (passive sign convention). External leads have zero Seebeck coefficient.</p>`);
     const hz = orders(r),
-      hs = periodic(r) ? r.harmonics.terminalVoltage : [{
-        re: r.terminalVoltage,
-        im: 0
-      }];
-    const hall = TE.hallVoltage(r);
-    let terminal = table(['Order', 'Hz', 'Magnitude V', 'Phase °', 'Real V', 'Imag V'], hs.map((z, n) => [n, n * (r.frequency ?? 0), mag(z), mag(z) > 1e-16 ? phase(z) : null, z.re, z.im]));
+      terminalData = TE.terminalQuantities(r),
+      hs = terminalData.voltage;
+    const hall = TE.hallVoltage(r),
+      hallInfo = TE.hallSummary(r),
+      polar = z => `${fmt(mag(z))} ∠ ${fmt(phase(z))}° (${fmt(z.re)} ${z.im < 0 ? '−' : '+'} ${fmt(Math.abs(z.im))}i)`,
+      spectrum = (rows, unit, floor) => table(['Order', 'Hz', 'Magnitude ' + unit, 'Phase °', 'Real ' + unit, 'Imag ' + unit], rows.map((z, n) => [n, n * (r.frequency ?? 0), mag(z), mag(z) > floor ? phase(z) : null, z.re, z.im]));
+    let terminal = (periodic(r) ? '<p>Terminal voltage U = V(source) − V(sink):</p>' : '') + spectrum(hs, 'V', 1e-16);
     if (periodic(r)) {
+      terminal += '<p>Terminal current I, entering the source:</p>' + spectrum(terminalData.current, 'A', terminalData.currentFloor);
+      terminal += table(['Terminal quantity', 'Value'], [['Impedance Z = U₁/I₁ (Ω)', terminalData.impedance ? polar(terminalData.impedance) : 'Not applicable: no terminal current at 1ω'], ['Mean absorbed power over the saved cycle (W)', terminalData.meanPower]]);
       terminal += add('temperature-probe', plotSvg(r.time, r.temperature.map(T => T[probe]), 'Probe temperature · K'));
       terminal += add('terminal-voltage', plotSvg(r.time, r.terminalVoltage, 'Terminal voltage · V'));
-      terminal += `<p>Hall voltage V(P+) − V(P−) in Bz = ${esc(fmt(c.magneticField ?? 0))} T:</p>` + table(['Order', 'Hz', 'Magnitude V', 'Phase °', 'Real V', 'Imag V'], hall.harmonics.map((z, n) => [n, n * r.frequency, mag(z), mag(z) > 1e-16 ? phase(z) : null, z.re, z.im]));
-      terminal += add('hall-voltage', plotSvg(r.time, hall.history, 'Hall voltage V(P+) − V(P−) · V'));
-    } else terminal += table(['Steady quantity', 'Value'], [['Probe temperature (K)', r.temperature[probe]], ['Terminal voltage (V)', r.terminalVoltage], ['Terminal current (A)', r.current], ['Electrical power absorbed (W)', r.electricalPower], ['Magnetic field Bz (T)', c.magneticField ?? 0], ['Hall voltage V(P+) − V(P−) (V)', hall.value]]);
+      terminal += add('terminal-current', plotSvg(r.time, r.current, 'Terminal current · A'));
+      if (hallInfo.active) {
+        terminal += `<p>Hall voltage V(P+) − V(P−) in Bz = ${esc(fmt(c.magneticField ?? 0))} T:</p>` + table(['Order', 'Hz', 'Magnitude V', 'Phase °', 'Real V', 'Imag V'], hall.harmonics.map((z, n) => [n, n * r.frequency, mag(z), mag(z) > 1e-16 ? phase(z) : null, z.re, z.im]));
+        terminal += table(['Hall quantity', 'Value'], [['Hall resistance R_xy = V_H₁/I₁ (Ω)', hallInfo.resistance ? polar(hallInfo.resistance) : 'Not applicable: no terminal current at 1ω']]);
+        terminal += add('hall-voltage', plotSvg(r.time, hall.history, 'Hall voltage V(P+) − V(P−) · V'));
+      } else terminal += `<p>Hall voltage: not applicable. ${esc(hallInfo.reason)}</p>`;
+    } else terminal += table(['Steady quantity', 'Value'], [['Probe temperature (K)', r.temperature[probe]], ['Terminal voltage (V)', r.terminalVoltage], ['Terminal current (A)', r.current], ['Electrical power absorbed (W)', r.electricalPower], ['Magnetic field Bz (T)', c.magneticField ?? 0],
+      ['Hall voltage V(P+) − V(P−) (V)', hallInfo.active ? hall.value : 'Not applicable: ' + hallInfo.reason],
+      ...(hallInfo.active ? [['Hall resistance R_xy = V_H/I (Ω)', hallInfo.resistance ? hallInfo.resistance.re : 'Not applicable: no terminal current']] : [])]);
     html += page('Terminal spectrum and probe', terminal);
     for (const section of TE.equationGuide) html += page(section.title, section.html);
     for (const [key, title, unit, nodal] of fields) {
@@ -264,13 +282,12 @@
       for (let j = 0; j < (p ? r.samples : 1); j++) yield [j, p ? r.time[j] : 0, p ? (r.cycleStartTime ?? (r.periods - 1) / r.frequency) + r.time[j] : 0, p ? r.terminalVoltage[j] : r.terminalVoltage, p ? r.current[j] : r.current, p ? hall.history[j] : hall.value];
     }());
     await add('terminal_harmonics.csv', function* () {
-      yield ['order', 'frequency_Hz', 'real_V', 'imag_V', 'peak_V', 'phase_deg', 'converged'];
+      yield ['order', 'frequency_Hz', 'real_V', 'imag_V', 'peak_V', 'phase_deg', 'converged', 'real_A', 'imag_A', 'peak_A', 'current_phase_deg'];
+      const t = TE.terminalQuantities(r);
       for (const n of orders(r)) {
-        const z = p ? r.harmonics.terminalVoltage[n] : {
-          re: r.terminalVoltage,
-          im: 0
-        };
-        yield [n, n * (r.frequency ?? 0), z.re, z.im, mag(z), mag(z) > 1e-16 ? phase(z) : null, r.converged];
+        const z = t.voltage[n],
+          i = t.current[n];
+        yield [n, n * (r.frequency ?? 0), z.re, z.im, mag(z), mag(z) > 1e-16 ? phase(z) : null, r.converged, i.re, i.im, mag(i), mag(i) > t.currentFloor ? phase(i) : null];
       }
     }());
     for (const [key,, unit, nodal] of fields.filter(f => f[0] !== 'J')) {
@@ -305,7 +322,7 @@
     });
     files.push({
       name: 'README.txt',
-      data: `THERMOELECTRIC LAB - COMPLETE RESULTS\n${r.converged ? 'CONVERGED' : 'UNCONVERGED - PROVISIONAL RESULTS'}\n\nmodel.json is the computed input model, not current UI edits.\nresults.json contains all retained solver outputs at full numerical precision.\nPeriodic histories cover ONLY the last saved complete cycle, not all startup cycles.\nreport.html is the full offline report: open it and choose Save as PDF / Print.\nfigures/ contains standalone SVG maps and plots.\nCSV values use SI units; node/cell identifiers are zero based.\nNode = j*(Nx+1)+i; cell = j*Nx+i; j=0 is the bottom.\nHistories use time within the saved cycle; terminal.csv also gives absolute time.\nHarmonics are peak complex phasors: u=U0+Re(sum(Un*exp(i*n*omega*t))).\nTerminal voltage U = V(source) - V(sink); the sink is at 0 V; positive current enters the source; absorbed power = U*I.\nHall voltage = V(P+) - V(P-) at the Hall probes (terminal.csv); magnetic field Bz in model.json.\nDC is signed in the real column; peak is its absolute magnitude.\nPhase is undefined at zero amplitude and unreliable near numerical noise.\nCurrent magnitude is derivable from Jx/Jy.\nThe selected report probe is recorded in manifest.json.\nZIP entries are stored without compression to work offline without dependencies.\n`
+      data: `THERMOELECTRIC LAB - COMPLETE RESULTS\n${r.converged ? 'CONVERGED' : 'UNCONVERGED - PROVISIONAL RESULTS'}\n\nmodel.json is the computed input model, not current UI edits.\nresults.json contains all retained solver outputs at full numerical precision.\nPeriodic histories cover ONLY the last saved complete cycle, not all startup cycles.\nreport.html is the full offline report: open it and choose Save as PDF / Print.\nfigures/ contains standalone SVG maps and plots.\nCSV values use SI units; node/cell identifiers are zero based.\nNode = j*(Nx+1)+i; cell = j*Nx+i; j=0 is the bottom.\nHistories use time within the saved cycle; terminal.csv also gives absolute time.\nHarmonics are peak complex phasors: u=U0+Re(sum(Un*exp(i*n*omega*t))).\nTerminal voltage U = V(source) - V(sink); the sink is at 0 V; positive current enters the source; absorbed power = U*I.\nterminal_harmonics.csv gives the terminal voltage and current phasors (current entering the source).\nhall_voltage_V in terminal.csv is V(P+) - V(P-) at the Hall probes; it is a Hall voltage only when Bz is nonzero and a painted material has a Hall, Nernst or Righi-Leduc coefficient (magnetic field Bz in model.json).\nDC is signed in the real column; peak is its absolute magnitude.\nPhase is undefined at zero amplitude and unreliable near numerical noise.\nCurrent magnitude is derivable from Jx/Jy.\nThe selected report probe is recorded in manifest.json.\nZIP entries are stored without compression to work offline without dependencies.\n`
     });
     return files;
   };

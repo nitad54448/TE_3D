@@ -9,6 +9,8 @@
   window.addEventListener('error', function (event) {
     if (window.TE_APP_READY) return;
     if (event.target && event.target.tagName === 'SCRIPT') {
+      // Optional scripts (lib/catalog.js, the offline material library) may be absent.
+      if (event.target.hasAttribute && event.target.hasAttribute('data-optional')) return;
       show('Could not load ' + event.target.src + '. Extract the entire ZIP, including the assets folder.');
     } else {
       show((event.message || 'Unknown script error') + ' — ' + (event.filename || '') + ':' + (event.lineno || ''));

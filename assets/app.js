@@ -56,8 +56,15 @@
   app.$('geometryCanvas').onpointermove = e => {
     if (app.paint) app.paintAt(e);
   };
-  app.$('geometryCanvas').onpointerup = () => app.paint = false;
-  app.$('geometryCanvas').onpointercancel = () => app.paint = false;
+  // The electrode checks depend on the painted materials: validate once per stroke.
+  const endPaint = () => {
+    app.paint = false;
+    if (!app.paintChanged) return;
+    app.paintChanged = false;
+    app.validateUI();
+  };
+  app.$('geometryCanvas').onpointerup = endPaint;
+  app.$('geometryCanvas').onpointercancel = endPaint;
   app.$('palette').onclick = e => {
     const b = e.target.closest('[data-select]');
     if (b) {
@@ -77,9 +84,7 @@
     try {
       TE.assert(!app.worker && !app.importingProject, 'Wait until the current operation finishes.');
       TE.assert(app.read().materials.length < 12, 'Maximum 12 materials.');
-      const res = await fetch('lib/' + file);
-      if (!res.ok) throw new Error('Could not load preset.');
-      const material = app.parseMaterialJson(await res.text());
+      const {material} = await app.libraryRecord(file);
       // A run or import may have started, or inputs changed, while the file was loading.
       TE.assert(!app.worker && !app.importingProject, 'Wait until the current operation finishes, then add the material again.');
       const config = app.read();
@@ -111,7 +116,7 @@
     app.probe = Math.round(y * c.ny) * (c.nx + 1) + Math.round(x * c.nx);
     app.drawResults();
   };
-  for (const id of ['field', 'harmonic', 'representation', 'arrows']) app.$(id).onchange = app.drawResults;
+  for (const id of ['field', 'harmonic', 'representation', 'arrows', 'terminalTrace']) app.$(id).onchange = app.drawResults;
   for (const id of ['profileField', 'profileTime']) app.$(id).addEventListener('input', app.drawProfile);
   app.$('excitationMode').addEventListener('change', app.modes);
   app.$('exportProfile').onclick = () => {
@@ -140,6 +145,21 @@
     app.$('exportMenu').hidden = !open;
     app.$('exportMenuButton').setAttribute('aria-expanded', String(open));
   };
+  // Choosing an export, or pressing Escape, closes the menu; focus returns to its button when it was inside.
+  const closeExportMenu = () => {
+    const menu = app.$('exportMenu');
+    if (menu.hidden) return;
+    const refocus = menu.contains(document.activeElement);
+    menu.hidden = true;
+    app.$('exportMenuButton').setAttribute('aria-expanded', 'false');
+    if (refocus) app.$('exportMenuButton').focus();
+  };
+  app.$('exportMenu').addEventListener('click', e => {
+    if (e.target.closest('button')) closeExportMenu();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeExportMenu();
+  });
   app.$('exportPdf').onclick = app.exportPdf;
   app.$('exportZip').onclick = app.exportZip;
   app.$('exportResults').onclick = app.exportResults;
@@ -191,16 +211,22 @@
   });
 
   const initPresets = async () => {
-    const fallback = ["Air.json", "Alumina.json", "Aluminum.json", "Bi2Te3.json", "Bi2Te3_n_type.json", "Bismuth.json", "Copper.json", "Ge_n_1e15.json", "Ge_n_1e19.json", "Ge_p_1e15.json", "Ge_p_1e19.json", "Gold.json", "PbTe.json", "Platinum.json", "Si_n_1e15.json", "Si_n_1e19.json", "Si_p_1e15.json", "Si_p_1e19.json"];
-    let files = fallback;
-    try {
+    const catalog = globalThis.TE_MATERIAL_CATALOG ?? null;
+    const known = ["Air.json", "Alumina.json", "Aluminum.json", "Bi2Te3.json", "Bi2Te3_n_type.json", "Bismuth.json", "Copper.json", "Ge_n_1e15.json", "Ge_n_1e19.json", "Ge_p_1e15.json", "Ge_p_1e19.json", "Gold.json", "PbTe.json", "Platinum.json", "Si_n_1e15.json", "Si_n_1e19.json", "Si_p_1e15.json", "Si_p_1e19.json"];
+    let files = catalog ? Object.keys(catalog) : known;
+    // Opened from disk, browsers block reading lib/: the list then comes from lib/catalog.js.
+    if (globalThis.location?.protocol !== 'file:') try {
       const res = await fetch('lib/index.json');
-      if (res.ok) files = (await res.json()).files || fallback;
+      if (res.ok) {
+        const listed = (await res.json()).files;
+        if (Array.isArray(listed)) files = listed;
+      }
     } catch {}
     const select = app.$('presetMaterial');
     if (select) {
       select.innerHTML += files.map(f => {
-        const name = f.replace('.json', '').replace(/_/g, ' ');
+        const record = catalog && Object.hasOwn(catalog, f) ? catalog[f] : null,
+          name = typeof record?.material?.name === 'string' ? record.material.name : f.replace('.json', '').replace(/_/g, ' ');
         return `<option value="${app.esc(f)}">${app.esc(name)}</option>`;
       }).join('');
     }

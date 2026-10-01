@@ -25,22 +25,35 @@
     for (const row of periodic ? r.temperature : [r.temperature]) {
       for (const value of row) { lo = Math.min(lo, value); hi = Math.max(hi, value); }
     }
-    const hs = periodic ? r.harmonics.terminalVoltage : [{re: r.terminalVoltage, im: 0}];
-    const v = hs[periodic ? 1 : 0];
+    const terminal = TE.terminalQuantities(r),
+      hs = terminal.voltage,
+      v = hs[periodic ? 1 : 0],
+      iz = terminal.current[periodic ? 1 : 0];
     app.$('vLabel').textContent = 'TERMINAL VOLTAGE · ' + (periodic ? '1ω' : 'DC');
     app.$('vMetric').textContent = app.fmt((periodic ? app.amp(v) : v.re) * 1000) + ' mV';
-    app.$('vPhase').textContent = periodic ? app.phase(v).toFixed(3) + '° · peak amplitude' : 'Signed stationary voltage';
+    app.$('vPhase').textContent = periodic ? app.degrees(v) + '° · peak amplitude' : 'Signed stationary voltage';
+    // Terminal current entering the source: the response under voltage control, the drive under current control.
+    app.$('iLabel').textContent = 'TERMINAL CURRENT · ' + (periodic ? '1ω' : 'DC');
+    app.$('iMetric').textContent = app.fmt((periodic ? app.amp(iz) : iz.re) * 1000) + ' mA';
+    app.$('iNote').textContent = terminal.openCircuit ? 'Open circuit: no terminal current or power'
+      : (periodic && app.amp(iz) > terminal.currentFloor ? app.degrees(iz) + '° · ' : '') + (periodic ? 'mean absorbed power ' : 'absorbed power U·I ') + app.fmt(terminal.meanPower * 1000) + ' mW';
     app.$('tMetric').textContent = lo.toFixed(3) + '–' + hi.toFixed(3) + ' K';
-    // Hall voltage V(P+) − V(P−) and the transverse resistance R_xy = V_H/I.
-    // Rounding noise (below 1E-12 of the terminal voltage) is shown as zero; real offsets stay visible.
-    const hall = TE.hallVoltage(r),
-      raw = periodic ? hall.harmonics[1] : {re: hall.value, im: 0},
-      hz = app.amp(raw) <= 1e-12 * Math.max(periodic ? app.amp(v) : Math.abs(v.re), 1e-15) ? {re: 0, im: 0} : raw,
-      iz = periodic ? r.harmonics.current[1] : {re: r.current, im: 0},
-      rxy = app.amp(iz) > 0 ? (periodic ? app.amp(hz) / app.amp(iz) : hz.re / iz.re) : null;
+    // Hall voltage V(P+) − V(P−) and R_xy = V_H/I, only when the field acts transversely; otherwise the
+    // probe difference is not a Hall voltage. Rounding noise (below 1E-12 of the terminal voltage) shows as zero.
+    const hallInfo = TE.hallSummary(r);
     app.$('hLabel').textContent = 'HALL VOLTAGE · ' + (periodic ? '1ω' : 'DC');
-    app.$('hMetric').textContent = app.fmt((periodic ? app.amp(hz) : hz.re) * 1000) + ' mV';
-    app.$('hNote').textContent = (periodic && app.amp(hz) > 1e-16 ? app.phase(hz).toFixed(3) + '° · ' : '') + (rxy === null ? 'V(P+) − V(P−)' : `R_xy = ${app.fmt(rxy)} Ω`) + ` · Bz = ${app.fmt(r.config.magneticField ?? 0)} T`;
+    if (!hallInfo.active) {
+      app.$('hMetric').textContent = '—';
+      app.$('hNote').textContent = hallInfo.reason;
+    } else {
+      const raw = hallInfo.voltage,
+        noise = app.amp(raw) <= 1e-12 * Math.max(periodic ? app.amp(v) : Math.abs(v.re), 1e-15),
+        hz = noise ? {re: 0, im: 0} : raw,
+        rxy = hallInfo.resistance && noise ? {re: 0, im: 0} : hallInfo.resistance;
+      app.$('hMetric').textContent = app.fmt((periodic ? app.amp(hz) : hz.re) * 1000) + ' mV';
+      app.$('hNote').textContent = (periodic && app.amp(hz) > 1e-16 ? app.degrees(hz) + '° · ' : '') +
+        (rxy === null ? 'V(P+) − V(P−)' : periodic ? `R_xy = ${app.fmt(app.amp(rxy))} Ω ∠ ${app.degrees(rxy, 1)}°` : `R_xy = ${app.fmt(rxy.re)} Ω`) + ` · Bz = ${app.fmt(r.config.magneticField ?? 0)} T`;
+    }
     app.$('cycleMetric').textContent = periodic ? r.periods + ' cycles' : 'DC';
     app.$('errorMetric').textContent = periodic ? (r.converged ? 'Normalized error ' : 'Unconverged cycle · error ') + (r.periodicError === null ? 'not available' : r.periodicError.toExponential(2)) + (r.converged ? ' ≤ 1' : '') : 'Energy residual ' + r.energyResidual.toExponential(2) + ' W';
     const diagnostics = r.diagnostics;
@@ -49,7 +62,10 @@
         (diagnostics.cycleExtrapolations ? `Cycle start extrapolated ${diagnostics.cycleExtrapolations}× (acceptance uses unextrapolated cycles). ` : '') : '') +
         `Heat balance: normalized residual ${app.fmt(diagnostics.heatResidualNormalized)}; maximum free-node residual ${app.fmt(diagnostics.heatResidualWatts)} W. Acceptance requires normalized errors ≤ 1.`
       : '';
-    app.$('spectrum').innerHTML = hs.map((z, n) => `<tr><td>${n ? n + 'ω' : 'DC'}</td><td>${n ? app.fmt(n * r.frequency) : '0'} Hz</td><td>${app.amp(z).toExponential(5)}</td><td>${app.amp(z) > 1e-16 ? app.phase(z).toFixed(3) + '°' : '—'}</td><td>${z.re.toExponential(5)}</td><td>${z.im.toExponential(5)}</td></tr>`).join('');
+    const spectrumRow = (label, z, n, floor) => `<tr><td>${label}</td><td>${n ? n + 'ω' : 'DC'}</td><td>${n ? app.fmt(n * r.frequency) : '0'} Hz</td><td>${app.amp(z).toExponential(5)}</td><td>${app.amp(z) > floor ? app.degrees(z) + '°' : '—'}</td><td>${z.re.toExponential(5)}</td><td>${z.im.toExponential(5)}</td></tr>`;
+    app.$('spectrum').innerHTML = hs.map((z, n) => spectrumRow('Voltage U · V', z, n, 1e-16)).join('') +
+      terminal.current.map((z, n) => spectrumRow('Current I · A', z, n, terminal.currentFloor)).join('') +
+      (terminal.impedance ? spectrumRow('Impedance Z = U/I · Ω', terminal.impedance, 1, 0) : '');
     app.setExports(!app.inputsChanged);
     app.$('exportStatus').textContent = '';
     if (previous) app.restoreResultView(previous, r);
@@ -75,14 +91,15 @@
     app.$('resultEmpty').textContent = message;
     app.$('resultEmpty').hidden = false;
     app.$('vLabel').textContent = 'TERMINAL VOLTAGE';
+    app.$('iLabel').textContent = 'TERMINAL CURRENT';
     app.$('hLabel').textContent = 'HALL VOLTAGE';
-    for (const id of ['vMetric', 'hMetric', 'tMetric', 'cycleMetric', 'scaleMin', 'scaleMax', 'surfaceMin', 'surfaceMax']) app.$(id).textContent = '—';
-    for (const id of ['vPhase', 'hNote', 'diagnosticsNote', 'scaleUnit', 'surfaceUnit', 'probeChart', 'voltageChart', 'probeReadout']) app.$(id).textContent = '';
+    for (const id of ['vMetric', 'iMetric', 'hMetric', 'tMetric', 'cycleMetric', 'scaleMin', 'scaleMax', 'surfaceMin', 'surfaceMax']) app.$(id).textContent = '—';
+    for (const id of ['vPhase', 'iNote', 'hNote', 'diagnosticsNote', 'scaleUnit', 'surfaceUnit', 'probeChart', 'voltageChart', 'probeReadout']) app.$(id).textContent = '';
     app.$('errorMetric').textContent = 'No valid result';
     app.$('fieldCaption').textContent = 'No valid result for the current model.';
     app.$('profileCaption').textContent = 'No valid result for the current model.';
     app.$('probeReadout').hidden = true;
-    app.$('spectrum').innerHTML = '<tr><td colspan="6">No computed result.</td></tr>';
+    app.$('spectrum').innerHTML = '<tr><td colspan="7">No computed result.</td></tr>';
     for (const id of ['resultCanvas', 'profileCanvas']) {
       const canvas = app.$(id);
       canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
@@ -162,6 +179,21 @@
       app.$('badge').textContent = 'ERROR';
       app.$('badge').className = 'error';
     };
+    // The cycle budget ran out: the last cycle is shown as an unconverged, provisional result (as for
+    // sweep points), not as a failure.
+    const finishUnconverged = message => {
+      const last = app.checkpoint;
+      app.worker?.terminate();
+      app.worker = null;
+      app.stopClock();
+      app.lock(false);
+      app.sweepResult = null;
+      app.$('bodeCard').hidden = true;
+      app.accept(last);
+      app.$('badge').textContent = 'UNCONVERGED';
+      app.$('badge').className = 'warning';
+      app.$('status').textContent = message + ' Showing the last cycle; its harmonics are provisional. Raise Maximum cycles on the Solver tab or refine the time steps, then run again.';
+    };
     try {
       const url = URL.createObjectURL(new Blob([TE.workerSource()], {
         type: 'text/javascript'
@@ -216,7 +248,8 @@
           app.lock(false);
           const unconverged = app.activeSweep.results.filter(r => !r.converged).length;
           app.finishSweep(unconverged ? `Sweep completed with ${unconverged} unconverged point(s), excluded from Bode.` : 'Sweep completed.', true);
-        } else if (data.type === 'sweepError' || data.type === 'error') finishError('Calculation failed: ' + data.message);else if (data.type === 'result') {
+        } else if (data.type === 'error' && data.unconverged && app.checkpoint && !app.activeSweep) finishUnconverged(data.message);
+        else if (data.type === 'sweepError' || data.type === 'error') finishError('Calculation failed: ' + data.message);else if (data.type === 'result') {
           try {
             TE.checkResult(data.result);
           } catch (e) {

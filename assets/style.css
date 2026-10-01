@@ -22,6 +22,8 @@
   --error-bg: #42252a;
   --error-border: #ff8e8a;
   --error-shadow: #ff8e8a44;
+  --warning-text: #f6c08f;
+  --warning-bg: #3b2a1b;
   --disabled-bg: #20252b;
   --disabled-text: #a4abb2;
   --disabled-border: #505a63;
@@ -59,6 +61,8 @@
   --error-bg: #fff0f0;
   --error-border: #b53743;
   --error-shadow: #b5374322;
+  --warning-text: #7f4210;
+  --warning-bg: #fbeedf;
   --disabled-bg: #e4e9ed;
   --disabled-text: #586873;
   --disabled-border: #a1afb9;
@@ -250,6 +254,11 @@ input:focus,select:focus,button:focus-visible,summary:focus-visible {
 #badge.error {
   color:var(--error-text);
   background:var(--error-bg);
+}
+/* A provisional result (cycle budget exhausted): shown, but not converged. */
+#badge.warning {
+  color:var(--warning-text);
+  background:var(--warning-bg);
 }
 #elapsed {
   margin-left:auto;
@@ -496,7 +505,7 @@ label>span {
 }
 .metrics {
   display:grid;
-  grid-template-columns:1fr 1fr 1.25fr 1fr;
+  grid-template-columns:1fr 1fr 1fr 1.25fr 1fr;
   gap:18px;
   margin-bottom:22px;
 }
@@ -908,4 +917,32 @@ input[type="checkbox"], input[type="range"], progress {
 }
 .card .probe-note {
   margin-top:12px;
+}
+
+/* Five result metrics: one row on wide screens, 3 + 2 on medium screens, pairs on small screens. */
+@media(max-width:1180px) and (min-width:721px) {
+  .metrics {
+    grid-template-columns:repeat(6,1fr);
+  }
+  .metrics article {
+    grid-column:span 2;
+  }
+  .metrics article:nth-child(n+4) {
+    grid-column:span 3;
+  }
+}
+@media(max-width:720px) {
+  .metrics article:last-child:nth-child(odd) {
+    grid-column:1 / -1;
+  }
+}
+/* Terminal waveform card: title and quantity selector on one row, aligned with the probe chart beside it. */
+.card-head.trace-head {
+  margin-bottom:0;
+  align-items:flex-start;
+  flex-wrap:nowrap;
+}
+.card-head.trace-head select {
+  width:auto;
+  flex:0 0 auto;
 }

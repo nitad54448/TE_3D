@@ -16,7 +16,7 @@
     "magnetoresistance": "1/T^2"
   },
   "material": {
-    "name": "Si p-type, 1e19 cm-3 (heavily doped)",
+    "name": "Si p-type, 1e19 cm-3",
     "rho": 2329,
     "Cp": 700,
     "k": 130,

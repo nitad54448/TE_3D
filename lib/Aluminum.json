@@ -20,21 +20,25 @@
     "rho": 2700,
     "Cp": 897,
     "k": 237,
-    "sigma": 37735849.056603774,
+    "sigma": 36658581.64703324,
     "alpha": -1.7e-06,
-    "beta": 0,
+    "beta": 0.004167530854542974,
     "alphaSlope": 0,
     "color": "#96b8d5",
     "hall": -3.43e-11,
     "nernst": 0,
-    "righiLeduc": -0.001294,
-    "magnetoresistance": 1.68e-06
+    "righiLeduc": -0.001257,
+    "magnetoresistance": 1.58e-06
   },
-  "notes": "Room-temperature bulk approximation: supplier thermal/density data and 293.15 K conductivity used unchanged at nominal 300 K. beta=0 and alphaSlope=0 deliberately assume constant transport coefficients; select Custom to supply measured slopes. Magnetic (3D): hall = -3.43e-11 m^3/C, the room-temperature low-field value (Hurd, via Yates et al.); aluminium is a two-band metal whose Hall coefficient changes sign at high fields, which this constant does not describe. righiLeduc = sigma*hall = -0.00129 1/T (Wiedemann-Franz law for the Hall components; electrons carry most of the heat). magnetoresistance = (sigma*hall)^2 = 1.7e-06 1/T^2, a Kohler-scale order-of-magnitude upper bound (zero for free electrons; the real value depends on the Fermi surface). nernst = 0: Mott-type estimates give |N| of order 1e-9 V/(K T) with a sign that is not established, negligible here.",
+  "notes": "Approximate bulk room-temperature preset. Supplier resistivity at 293.15 K (2.65e-8 Ohm m) and the tabulated temperature coefficient (0.00429 1/K) are treated as a local linear law and rebased to 300 K, as for Copper, Gold and Platinum: rho300 = 2.728e-8 Ohm m (CRC: 2.733e-8) and beta = 0.00417 1/K. Density, Cp and k are held constant. alphaSlope=0 is an assumption. Not a wide-temperature or alloy fit. Magnetic (3D): hall = -3.43e-11 m^3/C, the room-temperature low-field value (Hurd, via Yates et al.); aluminium is a two-band metal whose Hall coefficient changes sign at high fields, which this constant does not describe. righiLeduc = sigma*hall = -0.00126 1/T (Wiedemann-Franz law for the Hall components; electrons carry most of the heat). magnetoresistance = (sigma*hall)^2 = 1.6e-06 1/T^2, a Kohler-scale order-of-magnitude upper bound (zero for free electrons; the real value depends on the Fermi surface). nernst = 0: Mott-type estimates give |N| of order 1e-9 V/(K T) with a sign that is not established, negligible here.",
   "sources": [
     {
       "url": "https://www.goodfellow.com/global/material/metals/aluminium",
       "properties": "rho, Cp, k, resistivity"
+    },
+    {
+      "url": "http://hyperphysics.phy-astr.gsu.edu/hbase/Tables/rstiv.html",
+      "properties": "Temperature coefficient of resistivity 0.00429 1/K at 20 C (with resistivity 2.65e-8 Ohm m), used for beta and the 300 K rebasing."
     },
     {
       "url": "https://patents.google.com/patent/US8696989B2/en",

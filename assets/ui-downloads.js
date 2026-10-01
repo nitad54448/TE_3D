@@ -173,10 +173,11 @@
   };
   app.exportSpectrum = () => {
     if (!app.result) return;
-    const hs = app.result.method === 'steady' ? [{
-      re: app.result.terminalVoltage,
-      im: 0
-    }] : app.result.harmonics.terminalVoltage;
-    app.download('thermoelectric-3d-spectrum.csv', ['harmonic,frequency_Hz,peak_V,phase_deg,real_V,imag_V,converged,completed_cycles', ...hs.map((z, n) => [n, n * (app.result.frequency ?? 0), app.amp(z), app.amp(z) > 1e-16 ? app.phase(z) : '', z.re, z.im, app.result.converged, app.result.periods ?? 0].join(','))].join('\n'), 'text/csv');
+    // Terminal voltage and current phasors; the current columns follow the original voltage columns.
+    const t = TE.terminalQuantities(app.result);
+    app.download('thermoelectric-3d-spectrum.csv', ['harmonic,frequency_Hz,peak_V,phase_deg,real_V,imag_V,converged,completed_cycles,peak_A,current_phase_deg,real_A,imag_A', ...t.voltage.map((z, n) => {
+      const i = t.current[n];
+      return [n, n * (app.result.frequency ?? 0), app.amp(z), app.amp(z) > 1e-16 ? app.phase(z) : '', z.re, z.im, app.result.converged, app.result.periods ?? 0, app.amp(i), app.amp(i) > t.currentFloor ? app.phase(i) : '', i.re, i.im].join(',');
+    })].join('\n'), 'text/csv');
   };
 })(globalThis.TEApp);

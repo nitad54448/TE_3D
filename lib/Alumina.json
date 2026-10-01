@@ -16,7 +16,7 @@
     "magnetoresistance": "1/T^2"
   },
   "material": {
-    "name": "Alumina (96% Al2O3)",
+    "name": "Alumina (Al2O3)",
     "rho": 3750,
     "Cp": 750,
     "k": 24,

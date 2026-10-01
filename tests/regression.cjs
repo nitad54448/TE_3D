@@ -31,15 +31,16 @@ function appContext(initial = {}) {
   const els = new Map(), ctx2d = new Proxy({}, {get: (t, k) => k === 'measureText' ? () => ({width: 10}) : k in t ? t[k] : noop, set: (t, k, v) => (t[k] = v, true)});
   const get = id => {
     if (!els.has(id)) els.set(id, {id, value: initial[id] ?? '', textContent: '', innerHTML: '', hidden: false, disabled: false, checked: false, type: '', max: 0,
-      dataset: {}, style: {}, options: [{}, {}, {}], selectedOptions: [{text: 'Temperature'}], files: [], classList: {toggle(){}, remove(){}, add(){}},
-      setAttribute(){}, removeAttribute(){}, setCustomValidity(){}, addEventListener(){}, focus(){}, click(){}, getContext: () => ctx2d,
+      dataset: {}, style: {}, options: [{}, {}, {}], selectedOptions: [{text: 'Temperature'}], files: [], classList: {toggle(){}, remove(){}, add(){}}, listeners: {},
+      setAttribute(){}, removeAttribute(){}, setCustomValidity(){}, addEventListener(type, fn) {this.listeners[type] = fn;}, focus(){}, click(){}, getContext: () => ctx2d,
       getBoundingClientRect: () => ({left: 0, top: 0}), clientWidth: 700, clientHeight: 400});
     return els.get(id);
   };
   const sandbox = {console, Blob, TextEncoder, TextDecoder, DecompressionStream, setTimeout, clearTimeout, setInterval, clearInterval, performance, structuredClone,
     devicePixelRatio: 1, requestAnimationFrame: () => 0, addEventListener: noop, fetch: () => Promise.reject(new Error('offline')),
     URL: {createObjectURL: () => 'blob:', revokeObjectURL: noop},
-    document: {getElementById: get, querySelector: () => get('main'), querySelectorAll: () => [], addEventListener: noop, documentElement: {dataset: {}}, createElement: () => ({click: noop})}};
+    document: {getElementById: get, querySelector: () => get('main'), querySelectorAll: () => [], listeners: {}, addEventListener(type, fn) {this.listeners[type] = fn;},
+      documentElement: {dataset: {}}, createElement: () => ({click: noop})}};
   sandbox.globalThis = sandbox; sandbox.window = sandbox;
   vm.createContext(sandbox);
   for (const name of ['core.js', 'exports.js', 'worker.js', 'project.js', 'ui-state.js', 'ui-model.js', 'ui-plots.js', 'ui-sweep.js', 'ui-worker.js', 'ui-downloads.js', 'ui-project.js', 'app.js'])
@@ -491,6 +492,141 @@ async function check(label, fn) {await fn(); checks++; console.log('PASS', label
   await check('Solver-tab equations match the shared report guide', () => {
     const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
     for (const section of TE.equationGuide) for (const [, p] of section.html.matchAll(/<p>(.*?)<\/p>/g)) assert(html.includes(p), 'index.html differs: ' + p.slice(0, 60));
+  });
+  // ---- Review fixes: terminal current, Hall reporting, runs, library data and exports ----
+  await check('Terminal current, power and impedance reach the results, report and CSVs', async () => {
+    const t = TE.terminalQuantities(ac); // R = 0.01 Ω, 0.2 A peak: Z = 0.01 Ω, mean power ½·I²·R
+    assert(Math.abs(t.impedance.re - .01) < 1e-12 && Math.abs(t.impedance.im) < 1e-12 && Math.abs(t.meanPower - 2e-4) < 1e-12);
+    assert.equal(TE.terminalQuantities(dc).impedance, null); assert.equal(TE.terminalQuantities(dc).meanPower, dc.electricalPower);
+    setView(); app.accept(ac);
+    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, '0.000° · mean absorbed power 0.2 mW');
+    assert(el('spectrum').innerHTML.includes('<td>Current I · A</td><td>1ω</td>') && el('spectrum').innerHTML.includes('<td>Impedance Z = U/I · Ω</td>'));
+    const v = model(); v.electrical = {...v.electrical, kind: 'voltage', value: {bias: .002, amplitude: 0, phase: 0}};
+    app.accept(TE.run2D(v)); // voltage control: the current is the response
+    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, 'absorbed power U·I 0.4 mW');
+    const o = model(); o.electrical = {...o.electrical, kind: 'open_circuit'}; app.accept(TE.run2D(o));
+    assert.equal(el('iNote').textContent, 'Open circuit: no terminal current or power');
+    const report = acFiles.find(f => f.name === 'report.html').data;
+    assert(report.includes('Terminal current I, entering the source') && report.includes('Impedance Z = U₁/I₁ (Ω)') && report.includes('Mean absorbed power'));
+    assert(acFiles.some(f => f.name === 'figures/terminal-current.svg'));
+    assert((await acFiles.find(f => f.name === 'terminal_harmonics.csv').data.text()).startsWith('order,frequency_Hz,real_V,imag_V,peak_V,phase_deg,converged,real_A,imag_A,peak_A,current_phase_deg'));
+    let csv; app.download = (name, data) => {csv = data;}; app.result = ac; app.exportSpectrum();
+    assert(csv.startsWith('harmonic,frequency_Hz,peak_V,phase_deg,real_V,imag_V,converged,completed_cycles,peak_A,current_phase_deg,real_A,imag_A'));
+  });
+  await check('Hall voltage is reported only when the field acts transversely', async () => {
+    const active = c => TE.hallStatus(c).active;
+    assert(!active(model()) && TE.hallStatus(model()).reason === 'Bz = 0: no Hall voltage.');
+    assert(!active(hallBar({mat: {}})) && !active(hallBar({mat: {magnetoresistance: .1}}))); // no transverse coefficient
+    assert(active(hallBar({mat: {hall: -6e-4}})) && active(hallBar({mat: {nernst: 1e-4}})) && active(hallBar({mat: {righiLeduc: .01}})));
+    const unpainted = hallBar({mat: {}}); unpainted.materials.push({...unpainted.materials[0], name: 'unused', hall: -6e-4}); assert(!active(unpainted));
+    const r = TE.run2D(await app.moduleConfig()); app.accept(r); // Bz = 0, probes inside the floating alumina plates
+    assert.equal(el('hMetric').textContent, '—'); assert.equal(el('hNote').textContent, 'Bz = 0: no Hall voltage.');
+    const report = TE.resultReport(r).html;
+    assert(report.includes('Not applicable: Bz = 0: no Hall voltage.') && report.includes('>P+</text>') && report.includes('>P−</text>'));
+    const {context, app: a, el: e} = appContext({preset: 'layers'}); e('preset').value = 'hall'; await a.loadPreset();
+    a.accept(context.TE.run2D(a.config)); assert(e('hNote').textContent.includes('R_xy = -1.248 Ω'));
+  });
+  await check('An exhausted cycle budget shows the last cycle as UNCONVERGED, not as an error', async () => {
+    const c = model(true); c.maxPeriods = 3; for (const side of ['left', 'right', 'top', 'bottom']) c.thermal[side] = {kind: 'flux', value: 0}; // never periodic
+    const messages = [], worker = {self: {postMessage: m => messages.push(structuredClone(m))}};
+    vm.runInNewContext(TE.workerSource(), worker); worker.self.onmessage({data: c});
+    assert.deepEqual([messages.at(-2).type, messages.at(-1).type, messages.at(-1).unconverged], ['checkpoint', 'error', true]);
+    const applyGeometry = app.applyGeometry; app.applyGeometry = () => app.config; app.config = c; app.worker = null;
+    globalThis.Worker = class { postMessage() { setTimeout(() => messages.forEach(data => this.onmessage({data: structuredClone(data)}))); } terminate() {} };
+    try {
+      app.runSimulation(); await new Promise(resolve => setTimeout(resolve, 20)); // the page replays the worker's messages
+      assert.equal(el('badge').textContent, 'UNCONVERGED'); assert.equal(el('badge').className, 'warning');
+      assert(app.worker === null && app.result.periods === 3 && !app.result.converged && el('status').textContent.includes('Raise Maximum cycles'));
+    } finally { app.applyGeometry = applyGeometry; delete globalThis.Worker; }
+  });
+  await check('Painting and Fill re-run the electrode checks', () => {
+    const {app: a, el: e} = appContext({preset: 'layers'}); let validations = 0; a.validateUI = () => validations++;
+    a.config = {...model(), materials: [model().materials[0], {...model().materials[0], name: 'Other'}]}; a.selected = 1; a.geomFrame = {left: 0, top: 0, w: 400, h: 100};
+    e('geometryCanvas').setPointerCapture = noop; e('geometryCanvas').onpointerdown({pointerId: 1, clientX: 10, clientY: 50});
+    assert.deepEqual([a.config.materialMap[0], validations], [1, 0]); // validated once per stroke, when it ends
+    e('geometryCanvas').onpointerup(); assert.equal(validations, 1);
+    e('geometryCanvas').onpointerup(); assert.equal(validations, 1); // a stroke that painted nothing
+    a.selected = 0; a.fillMaterial(); assert.equal(validations, 2);
+  });
+  await check('Saved views keep only valid choices', () => {
+    el('terminalTrace').value = ''; assert.equal(app.captureResultView().terminalTrace, 'voltage');
+    el('terminalTrace').value = 'current'; assert.equal(app.captureResultView().terminalTrace, 'current');
+    assert.throws(() => TE.validateProjectView({terminalTrace: 'power'}, dc), /Invalid saved terminalTrace/);
+  });
+  await check('Bode phase unwrapping continues across gaps; the Bode CSV gives real and imaginary parts', () => {
+    const point = (frequency, deg, converged = true) => ({...structuredClone(results[0]), frequency, converged, harmonics: {...results[0].harmonics,
+      terminalVoltage: [{re: 0, im: 0}, {re: Math.cos(deg * Math.PI / 180), im: Math.sin(deg * Math.PI / 180)}, {re: 0, im: 0}, {re: 0, im: 0}]}});
+    const rows = TE.bodeRows([point(1, 150), point(2, 170), point(3, -170, false), point(4, -150)], {quantity: 'terminalVoltage', reference: 'time', unwrap: true});
+    assert.deepEqual(rows.map(r => r.phase === null ? null : Math.round(r.phase)), [150, 170, null, 210]);
+    const [head, row] = TE.bodeCsv(TE.bodeRows(results, {quantity: 'impedance'})).split('\n'), cells = row.split(',').map(v => Number(v.replace(/"/g, '')));
+    assert(head.endsWith(',status,real_part,imag_part') && Math.abs(cells.at(-2) - .01) < 1e-12 && Math.abs(cells.at(-1)) < 1e-12);
+  });
+  await check('Current arrows follow the phase of the terminal current', () => {
+    const c = model(true); c.electrical.value.phase = 90; const r = TE.run2D(c), {theta, basis} = TE.arrowPhase(r, 1);
+    assert(basis === 'terminal' && Math.abs(theta + Math.PI / 2) < 1e-9);
+    const z = r.harmonics.Jx[1][0], size = Math.hypot(z.re, z.im), shown = z.re * Math.cos(theta) - z.im * Math.sin(theta);
+    assert(Math.abs(z.re) < 1e-6 * size && Math.abs(shown - size) < 1e-9 * size); // Re alone would vanish at a 90° drive
+    assert.deepEqual(TE.arrowPhase(dc, 0), {theta: 0, basis: 'dc'});
+    const open = {method: 'periodic', config: {electrical: {kind: 'open_circuit'}}, harmonics: {current: Array(4).fill({re: 0, im: 0}), Jx: [[], [{re: 0, im: 2}]], Jy: [[], [{re: 0, im: 0}]]}};
+    const pattern = TE.arrowPhase(open, 1); assert(pattern.basis === 'pattern' && Math.abs(Math.abs(pattern.theta) - Math.PI / 2) < 1e-12);
+  });
+  await check('Results and reports name the linear solvers actually used', () => {
+    assert(dcFiles.find(f => f.name === 'report.html').data.includes('<td>Linear solvers</td><td>matrix-free CG (electrical), matrix-free CG (thermal)</td>'));
+    assert.equal(ac.method, 'BDF2 / nonlinear Picard / matrix-free CG'); // Bz = 0: unchanged
+    const r = TE.run2D({...hallBar({nx: 24, ny: 4, mat: {hall: -6.24e-4, righiLeduc: .01}}), mode: 'periodic', frequency: 2, samples: 64,
+      electrical: {kind: 'current', value: {bias: 0, amplitude: 1e-3, phase: 0}, sourceSide: 'left', sinkSide: 'right', sourceRange: [0, 1], sinkRange: [0, 1]}});
+    assert.equal(r.method, 'BDF2 / nonlinear Picard / banded LU (electrical), banded LU (thermal)');
+    const report = TE.resultReport(r).html; assert(report.includes('Hall resistance R_xy = V_H₁/I₁ (Ω)') && report.includes('banded LU (electrical), banded LU (thermal)'));
+  });
+  await check('Material library: catalog.js mirrors the files and serves a page opened from disk', async () => {
+    const lib = path.join(root, 'lib'), source = fs.readFileSync(path.join(lib, 'catalog.js'), 'utf8'), sandbox = {};
+    vm.runInNewContext(source, sandbox); const files = JSON.parse(fs.readFileSync(path.join(lib, 'index.json'), 'utf8')).files;
+    assert.deepEqual(Object.keys(sandbox.TE_MATERIAL_CATALOG), files);
+    for (const file of files) assert.equal(JSON.stringify(sandbox.TE_MATERIAL_CATALOG[file]), JSON.stringify(JSON.parse(fs.readFileSync(path.join(lib, file), 'utf8'))), file + ': run python lib/build_catalog.py');
+    const {context, app: a} = appContext({preset: 'layers'}); context.location = {protocol: 'file:'}; vm.runInContext(source, context);
+    const {material, via} = await a.libraryRecord('Copper.json');
+    assert.equal(via, 'catalog'); assert.equal(JSON.stringify(material), JSON.stringify(app.parseMaterialJson(fs.readFileSync(path.join(lib, 'Copper.json'), 'utf8'))));
+    assert((await a.moduleConfig()).description.includes('from the lib/catalog.js copies of Bi2Te3.json'));
+  });
+  await check('Material data: metals rebased to 300 K alike; S and m follow σ·R_H; lightly doped Si has β', () => {
+    const lib = file => app.parseMaterialJson(fs.readFileSync(path.join(root, 'lib', file), 'utf8'));
+    for (const [file, rho293, tcr] of [['Aluminum.json', 2.65e-8, .00429], ['Copper.json', 1.69e-8, .0043], ['Gold.json', 2.2e-8, .004], ['Platinum.json', 1.058e-7, .00392]]) {
+      const m = lib(file), S = m.sigma * m.hall; // ρ(300 K) = ρ(293.15 K)·(1 + α·6.85 K), β = α/(1 + α·6.85 K)
+      close(1 / m.sigma, rho293 * (1 + tcr * 6.85), 1e-12, file + ' ρ(300 K)'); close(m.beta, tcr / (1 + tcr * 6.85), 1e-12, file + ' β');
+      close(m.righiLeduc, S, 1e-3, file + ' S = σ·R_H'); close(m.magnetoresistance, S * S, 1e-2, file + ' m = (σ·R_H)²');
+    }
+    assert.equal(lib('Si_n_1e15.json').beta, .008); assert.equal(lib('Si_p_1e15.json').beta, .00733); // lattice mobility T^-2.4, T^-2.2
+  });
+  await check('Material names have 1 to 200 characters everywhere', () => {
+    const long = model(); long.materials[0].name = 'x'.repeat(201);
+    assert(TE.validate2DConfig(long).some(i => i.path === 'materials.0.name')); assert.throws(() => TE.checkEditorModel(long), /200 characters/);
+    assert.throws(() => app.parseMaterialJson(JSON.stringify({...model().materials[0], name: 'x'.repeat(201)})), /1–200 characters/);
+    long.materials[0].name = 'x'.repeat(200); assert.equal(TE.validate2DConfig(long).length, 0);
+  });
+  await check('Startup diagnostics ignore optional scripts (lib/catalog.js)', () => {
+    const box = {hidden: true, textContent: ''}, handlers = {}, page = {window: {addEventListener: (type, fn) => {handlers[type] = fn;}}, document: {getElementById: () => box}, navigator: {userAgent: 'test'}};
+    vm.runInNewContext(fs.readFileSync(path.join(root, 'assets', 'startup.js'), 'utf8'), page);
+    handlers.error({target: {tagName: 'SCRIPT', src: 'lib/catalog.js', hasAttribute: name => name === 'data-optional'}}); assert.equal(box.hidden, true);
+    handlers.error({target: {tagName: 'SCRIPT', src: 'assets/core.js', hasAttribute: () => false}}); assert(!box.hidden && box.textContent.includes('assets/core.js'));
+    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js" data-optional>'));
+  });
+  await check('The 3ω example uses 256 steps per period', async () => {
+    const {app: a, el: e} = appContext({preset: 'layers'}); e('preset').value = 'nonlinear'; await a.loadPreset();
+    assert.equal(e('preset').value, 'nonlinear'); assert.equal(a.config.samples, 256);
+  });
+  await check('The Hall, p-Ge example: hole Hall voltage between side probes with isothermal side edges', async () => {
+    const {context, app: a, el: e} = appContext({preset: 'layers'}); e('preset').value = 'hall-pge'; await a.loadPreset();
+    assert.equal(e('preset').value, 'hall-pge'); assert.equal(context.TE.validate2DConfig(a.config).length, 0);
+    const c = a.config, r = context.TE.run2D(c), VH = context.TE.hallVoltage(r).value, ideal = -c.materials[0].hall * c.electrical.value.bias * c.magneticField / c.depth;
+    close(VH, -42.186e-6, 1e-4, 'saved project V_H'); close(VH, ideal, .01, 'long bar −R_H·I·B/t'); // narrow contacts: 0.6 % below
+    const {plus, minus} = context.TE.hallProbeNodes(c); assert(r.temperature[plus] === 300 && r.temperature[minus] === 300); // isothermal probes
+    a.accept(r); assert.equal(e('hMetric').textContent, '-0.042186 mV'); assert(e('hNote').textContent.includes('R_xy = -0.042186 Ω'));
+  });
+  await check('The export menu closes after a choice and on Escape', () => {
+    const {context, el: e} = appContext({preset: 'layers'}), menu = e('exportMenu'); menu.contains = () => false;
+    menu.hidden = false; menu.listeners.click({target: {closest: () => ({})}}); assert.equal(menu.hidden, true);
+    menu.hidden = false; context.document.listeners.keydown({key: 'Enter'}); assert.equal(menu.hidden, false);
+    context.document.listeners.keydown({key: 'Escape'}); assert.equal(menu.hidden, true);
   });
   console.log(`\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

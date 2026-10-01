@@ -76,7 +76,8 @@
       } catch (error) {
         send({
           type: 'error',
-          message: error.message
+          message: error.message,
+          unconverged: Boolean(error.unconverged)
         });
       }
     };

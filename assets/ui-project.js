@@ -8,6 +8,7 @@
       representation: app.$('representation').value,
       arrows: app.$('arrows').checked,
       profileField: app.$('profileField').value,
+      terminalTrace: app.$('terminalTrace').value === 'current' ? 'current' : 'voltage', // only valid choices are saved
       timeFraction: r && r.method !== 'steady' ? Number(app.$('profileTime').value) / r.samples : 0,
       probe: app.probe,
       x: c ? (app.probe % (c.nx + 1)) / c.nx : .5,
@@ -15,7 +16,7 @@
     };
   };
   app.restoreResultView = function restoreResultView(view, r) {
-    for (const id of ['field', 'representation', 'profileField']) if (view[id] !== undefined) app.$(id).value = view[id];
+    for (const id of ['field', 'representation', 'profileField', 'terminalTrace']) if (view[id] !== undefined) app.$(id).value = view[id];
     app.$('harmonic').value = String(r.method === 'steady' ? 0 : view.harmonic ?? 0);
     if (view.arrows !== undefined) app.$('arrows').checked = view.arrows;
     // Set max before value: range inputs otherwise clamp the restored sample to the old max.

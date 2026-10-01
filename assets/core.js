@@ -802,7 +802,7 @@
                 initial
               } : undefined);
             } catch (error) {
-              throw new Error(`Electrical solve failed (${error.message}) Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E15), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.`);
+              throw new Error(`Electrical solve failed (${error.message}) Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E14), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.`);
             }
           };
           const base = solve(rhs, this.lastBase);
@@ -1302,7 +1302,9 @@
               cycleStartTime: (cycle - 1) / frequency,
               periodicError: Number.isFinite(error) ? error : null,
               finalTemperature: [...T],
-              method: 'BDF2 / nonlinear Picard / matrix-free CG',
+              method: this.hallActive || this.righiLeducActive
+                ? `BDF2 / nonlinear Picard / ${this.hallActive ? 'banded LU' : 'matrix-free CG'} (electrical), ${this.righiLeducActive ? 'banded LU' : 'matrix-free CG'} (thermal)`
+                : 'BDF2 / nonlinear Picard / matrix-free CG',
               converged,
               diagnostics: {
                 temperatureCycleError: Number.isFinite(temperatureError) ? temperatureError : null,
@@ -1568,6 +1570,7 @@
             return;
           }
           if (m.name !== undefined && (typeof m.name !== 'string' || !m.name.trim())) add(p + '.name', 'Material name cannot be empty.');
+          else if (m.name !== undefined && m.name.length > 200) add(p + '.name', 'Material name must have at most 200 characters.');
           function law(value, path, isPositive) {
             if (typeof value === 'number') {
               if (isPositive) positive(value, path);else finite(value, path);
@@ -1651,7 +1654,7 @@
             }
           }
           // Each electrode must touch conducting material. Forcing current through a near-insulator next
-          // to good conductors (contrast beyond ~1E15) cannot be resolved in double precision.
+          // to good conductors (contrast beyond ~1E14) cannot be resolved in double precision.
           if (c.hallProbes !== undefined) {
             const probes = c.hallProbes,
               ok = name => object(probes?.[name]) && [probes[name].x, probes[name].y].every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1);
@@ -2003,6 +2006,86 @@
           harmonics: r.harmonics.voltage.map(row => ({re: row[plus].re - row[minus].re, im: row[plus].im - row[minus].im}))
         };
       };
+      // Field-induced transport in the painted materials, by the solver's own activation rule (Solver2D:
+      // hallActive, righiLeducActive). Bz = 0 or all-zero coefficients solve exactly the 2D model.
+      TE.fieldEffects = c => {
+        const B = c.magneticField ?? 0,
+          used = new Set(c.materialMap ?? []),
+          any = key => B !== 0 && (c.materials ?? []).some((m, i) => used.has(i) && Boolean(m?.[key]));
+        return {
+          electrical: any('hall') || any('magnetoresistance') || any('nernst'),
+          thermal: any('righiLeduc'),
+          // A transverse (Hall-type) voltage needs a Hall, Nernst or Righi–Leduc coefficient.
+          transverse: any('hall') || any('nernst') || any('righiLeduc')
+        };
+      };
+      TE.linearSolvers = c => {
+        const f = TE.fieldEffects(c),
+          name = lu => lu ? 'banded LU' : 'matrix-free CG';
+        return `${name(f.electrical)} (electrical), ${name(f.thermal)} (thermal)`;
+      };
+      // V(P+) − V(P−) is a Hall voltage only when the field acts transversely. Otherwise it is just the
+      // potential difference between two points (e.g. across a floating insulator) and is not reported.
+      TE.hallStatus = c => {
+        if (!(c.magneticField ?? 0)) return {active: false, reason: 'Bz = 0: no Hall voltage.'};
+        if (!TE.fieldEffects(c).transverse) return {active: false, reason: 'No Hall, Nernst or Righi–Leduc coefficient in the painted materials: no Hall voltage.'};
+        return {active: true, reason: ''};
+      };
+      const complexRatio = (a, b) => {
+        const d = b.re * b.re + b.im * b.im;
+        return {re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d};
+      };
+      // Terminal peak phasors (DC to 3ω; steady: DC only), the 1ω impedance U₁/I₁ and the absorbed power
+      // (U·I, or its mean over the saved cycle). Ratios need a terminal current: none in open circuit, and
+      // none below currentFloor, the numerical resolution relative to the largest current phasor.
+      TE.terminalQuantities = r => {
+        const periodic = r.method !== 'steady',
+          voltage = periodic ? r.harmonics.terminalVoltage : [{re: r.terminalVoltage, im: 0}],
+          current = periodic ? r.harmonics.current : [{re: r.current, im: 0}],
+          openCircuit = r.config.electrical.kind === 'open_circuit',
+          size = z => Math.hypot(z.re, z.im),
+          currentFloor = Math.max(1e-15, 1e-10 * Math.max(...current.map(size)));
+        let meanPower = r.electricalPower ?? r.terminalVoltage * r.current;
+        if (periodic) {
+          meanPower = 0;
+          for (let j = 0; j < r.samples; j++) meanPower += r.terminalVoltage[j] * r.current[j];
+          meanPower /= r.samples;
+        }
+        const impedance = periodic && !openCircuit && size(current[1]) > currentFloor ? complexRatio(voltage[1], current[1]) : null;
+        return {periodic, voltage, current, impedance, meanPower, openCircuit, currentFloor};
+      };
+      // Hall voltage (DC, or the 1ω phasor) with R_xy = V_H/I, when the field acts transversely.
+      TE.hallSummary = r => {
+        const status = TE.hallStatus(r.config);
+        if (!status.active) return {...status, voltage: null, resistance: null};
+        const t = TE.terminalQuantities(r),
+          hall = TE.hallVoltage(r),
+          voltage = t.periodic ? hall.harmonics[1] : {re: hall.value, im: 0},
+          i = t.current[t.periodic ? 1 : 0];
+        return {...status, voltage, resistance: !t.openCircuit && Math.hypot(i.re, i.im) > t.currentFloor ? complexRatio(voltage, i) : null};
+      };
+      // Arrows show the current pattern Re(Ĵₙ·exp(iθ)), the field at nωt = θ. θ is the phase at which the
+      // terminal current of that harmonic peaks; without one (open circuit, or a harmonic absent from the
+      // terminals), it is the phase that maximizes Σ|J|². DC uses the mean field (θ = 0).
+      TE.arrowPhase = (r, n) => {
+        if (r.method === 'steady' || !n) return {theta: 0, basis: 'dc'};
+        const size = z => Math.hypot(z.re, z.im),
+          I = r.harmonics.current[n],
+          peak = Math.max(...r.harmonics.current.slice(1).map(size));
+        if (r.config.electrical.kind !== 'open_circuit' && size(I) > Math.max(1e-15, 1e-6 * peak)) return {theta: -Math.atan2(I.im, I.re), basis: 'terminal'};
+        const x = r.harmonics.Jx[n],
+          y = r.harmonics.Jy[n];
+        let A = 0,
+          B = 0,
+          C = 0;
+        for (let k = 0; k < x.length; k++) {
+          A += x[k].re * x[k].re + y[k].re * y[k].re;
+          B += x[k].im * x[k].im + y[k].im * y[k].im;
+          C += x[k].re * x[k].im + y[k].re * y[k].im;
+        }
+        // Σ|Re(Ĵe^{iθ})|² = A cos²θ + B sin²θ − 2C sinθ cosθ is largest at θ = ½·atan2(−2C, A − B).
+        return {theta: A === B && C === 0 ? 0 : Math.atan2(-2 * C, A - B) / 2, basis: 'pattern'};
+      };
       // Colour-scale range over displayed cell values and, for nodal fields, the nodal values: cell
       // averages never reach the nodal extremes (e.g. a prescribed boundary temperature).
       TE.valueRange = (...lists) => {
@@ -2219,7 +2302,8 @@
             reason = 'Unconverged point: excluded from Bode.';
           }
           if (phase !== null && unwrap && previous !== null) phase += 360 * Math.round((previous - phase) / 360);
-          previous = phase;
+          // Points without a phase (below threshold or unconverged) keep the last valid phase as reference.
+          if (phase !== null) previous = phase;
           return {
             frequency: r.frequency,
             outputFrequency: n * r.frequency,
@@ -2236,14 +2320,19 @@
           };
         });
       };
-      TE.bodeCsv = rows => ['frequency_Hz,output_frequency_Hz,magnitude,unit,phase_deg,raw_magnitude,reference_magnitude,converged,node_or_cell,x_m,y_m,status', ...rows.map(r => [r.frequency, r.outputFrequency, r.magnitude, r.unit, r.phase, r.rawMagnitude, r.referenceMagnitude, r.converged, r.nodeOrCell, r.x_m, r.y_m, r.reason].map(v => v == null ? '' : '"' + String(v).replace(/"/g, '""') + '"').join(','))].join('\n');
+      // real_part and imag_part are magnitude·cos(phase) and magnitude·sin(phase), in the magnitude unit.
+      TE.bodeCsv = rows => ['frequency_Hz,output_frequency_Hz,magnitude,unit,phase_deg,raw_magnitude,reference_magnitude,converged,node_or_cell,x_m,y_m,status,real_part,imag_part', ...rows.map(r => {
+        const complex = r.magnitude !== null && r.phase !== null,
+          rad = complex ? r.phase * Math.PI / 180 : 0;
+        return [r.frequency, r.outputFrequency, r.magnitude, r.unit, r.phase, r.rawMagnitude, r.referenceMagnitude, r.converged, r.nodeOrCell, r.x_m, r.y_m, r.reason, complex ? r.magnitude * Math.cos(rad) : null, complex ? r.magnitude * Math.sin(rad) : null].map(v => v == null ? '' : '"' + String(v).replace(/"/g, '""') + '"').join(',');
+      })].join('\n');
     })(globalThis.TE);
 
     /* Shared text for the interface and printed report. */
     (function (TE) {
       TE.equationGuide = [{
         "title": "Governing equations and boundaries",
-        "html": "<h3>Unknown fields and constitutive laws</h3><p>T(x,y,t) is absolute temperature (K), V(x,y,t) electric potential (V). The local material defines σ(T), k(T), α(T), density ρ(T), and Cp(T). J is electric current density; q is total heat flux. The two constitutive laws below hold at Bz = 0; in a field they are replaced by the tensor laws of the Magnetic field section, while ∇·J = 0, the energy equation and the boundary conditions are unchanged.</p><p>J = −σ(T)[∇V + α(T)∇T]<br>∇·J = 0<br>q = α(T)TJ − k(T)∇T<br>ρCp ∂T/∂t = −∇·q − J·∇V</p><h3>Thermoelectric coupling</h3><p>Within a smooth homogeneous material at Bz = 0, these equations give:<br>ρCp ∂T/∂t = ∇·(k∇T) + |J|²/σ − T(dα/dT)J·∇T.<br>The last two terms are Joule and Thomson heating. Π = αT is the Peltier coefficient; discontinuities in α produce interface Peltier transport through q. These effects are already included in total flux and must not be added a second time.</p><h3>Boundary and interface conditions</h3><p>Electrical contacts are equipotential; the sink is grounded, V(sink) = 0. The terminal voltage is U = V(source) − V(sink) and the terminal current I enters at the source (passive sign convention: a resistor gives U = RI and absorbs UI). Voltage mode prescribes U; current mode prescribes I; open circuit imposes I = 0. The external leads are ideal conductors with zero Seebeck coefficient: U is measured against an α = 0 reference, and an electrode on thermoelectric material exchanges the contact Peltier heat αTI (absorbed where positive current enters a material with α &gt; 0). Other edges satisfy J·n = 0. Thermal edges prescribe T, q·n = qout, or q·n = h(T − Tambient), where n is the outward normal. Zero total flux includes Peltier transport and, in a field, Ettingshausen transport and the Righi–Leduc part of conduction. Ideal interfaces have continuous T, V, normal J and total normal q; contact resistance is absent. Peltier coupling changes the conductive-flux balance: qcond,right − qcond,left = −Jn T(αright − αleft). Temperature itself remains continuous; its slope generally changes at an interface. Opposite interfaces in Cu/Bi₂Te₃/Cu have opposite Peltier signs for the same current direction. Strong Joule heating can mask cooling. With zero-bias sinusoidal current, inspect the signed 1ω temperature response (real part or phase), not only its DC mean or unsigned amplitude.</p>"
+        "html": "<h3>Unknown fields and constitutive laws</h3><p>T(x,y,t) is absolute temperature (K), V(x,y,t) electric potential (V). The local material defines σ(T) and α(T); its thermal conductivity k, density ρ and heat capacity Cp are constant. J is electric current density; q is total heat flux. The two constitutive laws below hold at Bz = 0; in a field they are replaced by the tensor laws of the Magnetic field section, while ∇·J = 0, the energy equation and the boundary conditions are unchanged.</p><p>J = −σ(T)[∇V + α(T)∇T]<br>∇·J = 0<br>q = α(T)TJ − k∇T<br>ρCp ∂T/∂t = −∇·q − J·∇V</p><h3>Thermoelectric coupling</h3><p>Within a smooth homogeneous material at Bz = 0, these equations give:<br>ρCp ∂T/∂t = ∇·(k∇T) + |J|²/σ − T(dα/dT)J·∇T.<br>The last two terms are Joule and Thomson heating. Π = αT is the Peltier coefficient; discontinuities in α produce interface Peltier transport through q. These effects are already included in total flux and must not be added a second time.</p><h3>Boundary and interface conditions</h3><p>Electrical contacts are equipotential; the sink is grounded, V(sink) = 0. The terminal voltage is U = V(source) − V(sink) and the terminal current I enters at the source (passive sign convention: a resistor gives U = RI and absorbs UI). Voltage mode prescribes U; current mode prescribes I; open circuit imposes I = 0. The external leads are ideal conductors with zero Seebeck coefficient: U is measured against an α = 0 reference, and an electrode on thermoelectric material exchanges the contact Peltier heat αTI (absorbed where positive current enters a material with α &gt; 0). Other edges satisfy J·n = 0. Thermal edges prescribe T, q·n = qout, or q·n = h(T − Tambient), where n is the outward normal. Zero total flux includes Peltier transport and, in a field, Ettingshausen transport and the Righi–Leduc part of conduction. Ideal interfaces have continuous T, V, normal J and total normal q; contact resistance is absent. Peltier coupling changes the conductive-flux balance: qcond,right − qcond,left = −Jn T(αright − αleft). Temperature itself remains continuous; its slope generally changes at an interface. Opposite interfaces in Cu/Bi₂Te₃/Cu have opposite Peltier signs for the same current direction. Strong Joule heating can mask cooling. With zero-bias sinusoidal current, inspect the signed 1ω temperature response (real part or phase), not only its DC mean or unsigned amplitude.</p>"
       }, {
         "title": "Excitation and numerical method",
         "html": "<h3>DC and harmonic excitation</h3><p>DC solves the stationary system with ∂T/∂t = 0, using only DC biases. Periodic inputs use b + A cos(2πft + φ); φ is in degrees in the editor. The nonlinear time-domain solution generates harmonics:<br>u(t) = U₀ + Re[Σ Uₙ exp(inωt)], n = 1,2,3.<br>Coefficients are peak phasors, not RMS. Instantaneous spatial profiles use stored time samples, including all resolved harmonics; they are not reconstructed from only 1ω–3ω.</p><h3>Discretization and iteration</h3><p>Each rectangular cell contributes four half-face links. For a link a→b of length L and half-face area A:<br>g = A/[L mean(ρₑ(Ta),ρₑ(Tb))]<br>Iab = g[Va − Vb − αmean(Tb − Ta)]<br>Qab = αmean(Ta + Tb)Iab/2 − kmean A(Tb − Ta)/L.<br>Electrical work Iab(Va − Vb) is shared between the two nodes. Cell heat capacity is split among its four corners. Coupled equations are iterated with Picard, undamped first and damped when an undamped step fails or stops contracting; Peltier cooling at a node, a source proportional to −T, is treated implicitly on the matrix diagonal. The terminal current is I = Σ Iab(ua − ub) over all links, where u is the unit solution (u = 1 on the source, 0 on the sink); this weighting is exact for any link currents that satisfy Kirchhoff's law. Symmetric linear systems use warm-started, Jacobi-preconditioned conjugate gradients; the non-symmetric systems of the magnetic field use banded LU. BDF2 advances periodic runs after one backward-Euler startup step. Cycle convergence checks successive temperature histories and terminal DC/1ω–3ω phasors; the voltage tolerance follows the temperature tolerance through the largest Seebeck coefficient. When the cycle-to-cycle drift decays geometrically along a stable direction, the cycle start is extrapolated to its limit, and convergence is then checked on two plain cycles. Nonlinear acceptance also requires a normalized heat-balance residual ≤ 1.</p><p>Ly × depth gives the cross-section of a 1D reduction. Ny = 1, full left/right contacts and zero top/bottom flux produce the transverse-uniform limit. Grid/time refinement remains necessary, especially for weak 3ω: BDF2 shifts the effective frequency of harmonic n by about (2πn/N)²/3 with N steps per period, about 3 % at 3ω with 64 steps and 0.2 % with 256. The model assumes isotropic material properties (apart from the field-induced terms of the Magnetic field section), perfect interfaces and no front/back heat losses.</p>"

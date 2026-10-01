@@ -13,7 +13,7 @@ The application folder contains:
 
 Serve the folder with any static web server and open `index.html`, for example `python3 -m http.server 8000` in the folder, then `http://localhost:8000/`. No internet connection is needed.
 
-Opening `index.html` directly from disk also works, except for the material library: browsers do not let a page opened from disk read `lib/`, so **Select preset…** cannot load materials, and the thermoelectric module example uses its built-in copies of the library materials.
+Opening `index.html` directly from disk also works. Browsers do not let a page opened from disk read `lib/*.json`, so the material library is then read from `lib/catalog.js`, the offline copy that `python lib/build_catalog.py` writes next to `lib/index.json`: rebuild it after editing material files.
 
 The interface has a dark and a light theme. It follows the system setting until you choose one with the header toggle, and remembers that choice.
 
@@ -31,12 +31,12 @@ The interface has a dark and a light theme. It follows the system setting until 
 
 ### Governing equations
 
-T is absolute temperature (K), V electric potential (V), J current density and q total heat flux. Each material defines σ(T), k(T), α(T), density ρ and heat capacity Cp. The two constitutive laws below hold at Bz = 0. In a field they are replaced by the tensor laws of *Magnetic field (3D)*; ∇·J = 0, the energy equation and the boundary conditions are unchanged.
+T is absolute temperature (K), V electric potential (V), J current density and q total heat flux. Each material defines σ(T) and α(T), and a constant thermal conductivity k, density ρ and heat capacity Cp. The two constitutive laws below hold at Bz = 0. In a field they are replaced by the tensor laws of *Magnetic field (3D)*; ∇·J = 0, the energy equation and the boundary conditions are unchanged.
 
 ```
 J = −σ(T) [∇V + α(T) ∇T]
 ∇·J = 0
-q = α(T) T J − k(T) ∇T
+q = α(T) T J − k ∇T
 ρ Cp ∂T/∂t = −∇·q − J·∇V
 ```
 
@@ -167,7 +167,8 @@ Each effect needs its own driver in the plane, and appears only if the material'
 
 - Two point probes, P+ and P−, are placed on the Boundaries tab in % of the width and height, and drawn on the maps. They must snap to different nodes. The Hall voltage is V_H = V(P+) − V(P−).
 - The default probes, P+ at the bottom middle and P− at the top middle, give V_H = R_H·I·B/t for current along +x in a long bar, t being the depth. Holes (R_H > 0) give a positive V_H.
-- The results show V_H (the DC value, or the 1ω amplitude and phase) with R_xy = V_H/I. Reports list the field, the probes and the magnetic coefficients, and give V_H (DC, or its DC–3ω harmonics and waveform). `terminal.csv` has a `hall_voltage_V` column, and the Bode plots offer the Hall voltage as a quantity.
+- V_H is reported only when the field acts: Bz ≠ 0 and a painted material has a Hall, Nernst or Righi–Leduc coefficient. Otherwise V(P+) − V(P−) is just the potential difference between two points (for example across a floating insulator), and the results show — with the reason.
+- The results show V_H (the DC value, or the 1ω amplitude and phase) with R_xy = V_H/I (DC, or the complex 1ω ratio as magnitude and phase); R_xy needs a terminal current, so it is absent in open circuit. Reports list the field, the probes and the magnetic coefficients, mark the probes on every map, and give V_H and R_xy (DC, or the DC–3ω harmonics and waveform of V_H). `terminal.csv` has a `hall_voltage_V` column with V(P+) − V(P−) in every case, and the Bode plots offer the Hall voltage as a quantity when the field acts.
 
 ### Numerics
 
@@ -221,7 +222,7 @@ Electrical work Iab(Va − Vb) is shared equally between the two nodes. Each cel
 - the change of the terminal DC to 3ω phasors, relative to an absolute tolerance plus 10⁻⁶·|U|. For the current the absolute tolerance is 10⁻¹⁰ A. For the voltage it is αmax·2·10⁻⁷ K, at least 10⁻¹² V, where αmax is the largest Seebeck coefficient of the model (4·10⁻¹¹ V for Bi₂Te₃): a temperature change at the temperature tolerance moves the terminal voltage by about that much. The value used is reported with the diagnostics;
 - the normalized heat-balance residual.
 
-Otherwise the run ends at the maximum cycle count (3 to 1000) as unconverged.
+Otherwise the run ends at the maximum cycle count (3 to 1000) as unconverged: its last cycle is shown, labelled UNCONVERGED and provisional, and can be inspected and exported like any result.
 
 **Cycle extrapolation.** The approach to the periodic state is dominated by the slowest thermal mode, so successive cycle-start states differ by d(k) ≈ λ·d(k−1). When three successive cycle starts show 0 < λ < 0.995 with nearly parallel drifts (cosine > 0.999), the cycle start is moved to the extrapolated limit, by d·λ/(1 − λ) (at most 200·d), and the preceding step is shifted by the same amount so BDF2 continues smoothly. The jump only changes a starting state: convergence is still tested on two unextrapolated cycles with unchanged tolerances, the last two cycles of the budget are never extrapolated, and a jump that would leave the operating range or the validity of a material law is skipped. Without a periodic state (no thermal anchor and a net heat input), the drift does not decay and no jump is made. In the RC example, 30 Hz converges in 6 cycles and 300 Hz in 24; without extrapolation they need 123 and 890 cycles for the same impedance to 7 digits. The number of extrapolations is reported with the diagnostics.
 
@@ -233,30 +234,30 @@ Otherwise the run ends at the maximum cycle count (3 to 1000) as unconverged.
 
 - Frequencies run from a minimum to a maximum over 2 to 100 points, with logarithmic or linear spacing. Bias, amplitude and phase stay fixed, and every frequency starts independently with no shared transient history.
 - A frequency that reaches the maximum cycle count is kept as an unconverged point and the sweep continues. Unconverged points are excluded from the Bode plots. A solver error stops the sweep. **Stop** keeps the completed points and the latest saved cycle of the current point.
-- **Quantity**: terminal voltage (source − sink), terminal current, impedance, Hall voltage V(P+) − V(P−), or the temperature, potential, Jx, Jy, qx or qy at a probe given in % of the width and height. Temperature and potential snap to the nearest node; J and q use the containing cell.
+- **Quantity**: terminal voltage (source − sink), terminal current, impedance, Hall voltage V(P+) − V(P−) (when the field acts), or the temperature, potential, Jx, Jy, qx or qy at a probe given in % of the width and height. Temperature and potential snap to the nearest node; J and q use the containing cell.
 - **Impedance** is U/I = (V(source) − V(sink)) / I at 1ω.
 - **Harmonic**: 1ω, 2ω or 3ω.
 - **Reference** for phase and normalization: the electrical excitation, the measured terminal current or voltage at 1ω, the excitation of a thermal side, or the time origin cos(nωt). References that are inactive in the model are disabled.
-- **Phase** = φ(output, n) − n·φ(reference, 1), wrapped to ±180° or unwrapped. It is shown only when the raw output amplitude exceeds the phase threshold.
+- **Phase** = φ(output, n) − n·φ(reference, 1), wrapped to ±180° or unwrapped. It is shown only when the raw output amplitude exceeds the phase threshold; unwrapping continues across points without a phase.
 - **Normalization**: raw, divided by the reference amplitude, or divided by the reference amplitude to the power n.
 - **Representation**: Magnitude / Phase, or the Real / Imaginary parts of magnitude·exp(i·phase).
 - **Magnitude scale**: physical units, or dB as 20·log₁₀(module / reference). dB applies to the magnitude only and is unavailable for Real / Imaginary.
 - Clicking a point, or choosing **Map / report frequency**, shows the spatial results for that frequency.
-- **Export Bode CSV** writes magnitudes in physical units (never dB) and phases.
+- **Export Bode CSV** writes magnitudes in physical units (never dB), phases, and the real and imaginary parts of magnitude·exp(i·phase) (`real_part`, `imag_part`).
 
 ## Results
 
-- **Metrics**: terminal voltage U = V(source) − V(sink) (1ω peak amplitude and phase for periodic runs, the signed value for DC), temperature range, convergence and heat-balance diagnostics. Under current drive a resistor shows a phase near 0°; a thermoelectric element shows a small negative (capacitive) phase.
-- **Hall voltage**: V(P+) − V(P−) with R_xy = V_H/I and the field (see *Magnetic field (3D)*). The probes are drawn on the maps.
+- **Metrics**: terminal voltage U = V(source) − V(sink) and terminal current I entering the source (1ω peak amplitude and phase for periodic runs, the signed value for DC), the absorbed electrical power (U·I for DC, its mean over the saved cycle for periodic runs), temperature range, convergence and heat-balance diagnostics. In voltage control the current is the response. Under current drive a resistor shows a phase near 0°; a thermoelectric element shows a small negative (capacitive) phase.
+- **Hall voltage**: V(P+) − V(P−) with R_xy = V_H/I and the field, when the field acts; otherwise — and the reason (see *Magnetic field (3D)*). The probes are drawn on the maps.
 - **Spatial response**: maps of temperature, voltage, |J|, Jx, Jy, qx and qy at DC, 1ω, 2ω or 3ω, as Amplitude, Phase, Re or Im.
   - DC is the signed mean.
   - Temperature and voltage average the four complex nodal phasors of each cell before the representation is taken. Their colour scale spans the nodal values as well as the cell values, so its ends show the true extremes, such as a prescribed boundary temperature, which cell averages never reach.
   - |J| is the vector norm √(|Jx|² + |Jy|²), not a harmonic of instantaneous |J|.
   - Phase maps grey out cells whose amplitude is at or below max(absolute threshold, 10⁻⁶ × field peak). The absolute thresholds are 10⁻⁷ K, 10⁻¹² V, and 10⁻⁹ SI units for J and q.
-- **Current arrows** show the real current phasor at 0°: direction and relative magnitude. Vectors below 10⁻⁸ of the strongest current harmonic (or 10⁻¹² A/m²) are hidden.
-- **Probe**: click the map to move it. The readout under the map gives the displayed field at the probe, in the selected harmonic and representation: the nodal value for temperature and voltage, the mean of the adjacent cells for cell fields. DC runs also list the probe temperature and potential; periodic runs plot its temperature and the terminal voltage over the saved cycle. Reports use the same probe.
+- **Current arrows** show the current pattern at one instant, Re(Jₙ·exp(iθ)): direction and relative magnitude. DC shows the mean current. For a harmonic, θ is the phase nωt at which the terminal current of that harmonic peaks; without one (open circuit, or a harmonic absent from the terminals) it is the phase at which the current pattern is largest. The note under the map gives θ. Vectors below 10⁻⁸ of the strongest current harmonic (or 10⁻¹² A/m²) are hidden.
+- **Probe**: click the map to move it. The readout under the map gives the displayed field at the probe, in the selected harmonic and representation: the nodal value for temperature and voltage, the mean of the adjacent cells for cell fields. DC runs also list the probe temperature and potential; periodic runs plot its temperature, and the terminal voltage or current, over the saved cycle. Reports use the same probe.
 - **Spatial field · selected time**: the instantaneous field at any stored sample of the cycle.
-- **Terminal harmonics**: DC to 3ω peak phasors of the terminal voltage U = V(source) − V(sink), referenced to cos(ωt).
+- **Terminal harmonics**: DC to 3ω peak phasors of the terminal voltage U = V(source) − V(sink) and current I, referenced to cos(ωt), and the impedance Z = U₁/I₁ at 1ω (periodic runs with a terminal current).
 
 ## Examples
 
@@ -266,11 +267,12 @@ Otherwise the run ends at the maximum cycle count (3 to 1000) as unconverged.
 | Cu / BiTe · layered | Copper and BiTe in series, driven by 0.1 A at 2 Hz: Peltier heat at the interface and the harmonic temperature response. |
 | Narrow contact · current spreading | 0.1 A DC entering through the middle half of the left edge and spreading into the domain. |
 | Homogeneous · Joule 2ω | Resistive block driven by 1 A at 2 Hz: Joule heating at DC and 2ω. |
-| Nonlinear resistance · 3ω | β = 0.01 K⁻¹ with 0.2 A: the temperature-dependent resistance produces a 3ω voltage. |
+| Nonlinear resistance · 3ω | β = 0.01 K⁻¹ with 0.2 A at 256 steps per period: the temperature-dependent resistance produces a 3ω voltage. |
 | Open circuit · Seebeck DC | α = 200 µV/K between 300 K and 350 K in open circuit: the Seebeck voltage. |
 | Thermoelectric module · Bi₂Te₃ n/p couple | A single thermoelectric couple as in a Peltier module (below). |
 | RC circuit · thermoelectric impedance spectrum | A thermoelectric element with the impedance of an RC circuit, swept from 0.003 to 30 Hz (below). |
 | Hall bar · Hall voltage | 1 mA DC along an 8 mm × 1 mm n-type semiconductor bar, 0.5 mm thick, in Bz = 1 T: V_H = R_H·I·B/t = −1.248 mV between the probes at mid-length. |
+| Hall, p-Ge | 1 mA DC between 0.4 mm contacts at the middle of the top and bottom edges of a 4 mm × 10 mm plate of p-type Ge (Ge-p, reference: 8.4·10¹⁷ cm⁻³), 0.175 mm thick, in Bz = 1 T, with the side edges at 300 K: V_H = −R_H·I·B/t = −42.5 µV between probes at mid-height on the side edges (−42.2 µV computed; the narrow contacts barely short the Hall field). |
 
 The **Example** selector names the loaded example until the model changes. Any edit, or opening a project, switches it to **Custom**; choosing an example, even the same one, loads it fresh.
 
@@ -283,7 +285,7 @@ A 2D cut through the middle of one Bi₂Te₃ couple, with a depth of 1.4 mm and
 - default setup: a Peltier cooler at 4 A DC, with the bottom plate on a 300 K heat sink and the top plate insulated;
 - as a generator: bottom 350 K, top temperature 300 K, open circuit.
 
-The materials are loaded from `lib/Bi2Te3.json`, `lib/Bi2Te3_n_type.json`, `lib/Copper.json`, `lib/Alumina.json` and `lib/Air.json`. If a file is missing or unsuitable for its role (legs need the right Seebeck sign, copper must conduct, plates and gap must insulate), a built-in copy with the same values is used. The model description states which source was used. A real module repeats this couple; voltage and heat pumping scale with the number of couples.
+The materials are loaded from `lib/Bi2Te3.json`, `lib/Bi2Te3_n_type.json`, `lib/Copper.json`, `lib/Alumina.json` and `lib/Air.json`. If a file is missing or unsuitable for its role (legs need the right Seebeck sign, copper must conduct, plates and gap must insulate), a built-in copy with the same values is used. Opened from disk, the files are read from `lib/catalog.js`. The model description states which source was used. A real module repeats this couple; voltage and heat pumping scale with the number of couples.
 
 ### RC circuit example: thermoelectric impedance spectrum
 
@@ -366,7 +368,7 @@ The thermoelectric capacitance is huge because it is a thermal capacity divided 
   - −Im(Z) peaks at R_TE/2 = 0.75 mΩ at fc.
   - Im(Z) is negative: the element is capacitive.
 - **Magnitude / Phase**: |Z| steps down from 3.336 to 1.836 mΩ. The phase has its minimum of about −17° at fc·√(1 + R_TE/R0) ≈ 0.49 Hz.
-- **Export Bode CSV** gives magnitude and phase at every frequency for fitting or for plotting −Im against Re (a semicircle of diameter R_TE starting at R0).
+- **Export Bode CSV** gives magnitude, phase and the real and imaginary parts at every frequency, for fitting or for plotting −Im against Re (a semicircle of diameter R_TE starting at R0).
 
 **Simulation versus the formula.** The computed spectrum agrees with Z(ω) within 0.02 % below 0.1 Hz and within 0.5 % at every frequency:
 
@@ -414,7 +416,8 @@ The Si and Ge presets are model presets built from standard data:
 - density, heat capacity, thermal conductivity and effective densities of states from the Ioffe semiconductor archive;
 - mobility versus doping from the Caughey–Thomas fit (Si) or the Ioffe/Hilsum formulas (Ge);
 - σ = n·e·μ;
-- the Seebeck coefficient and its slope from a single parabolic band with Fermi–Dirac statistics.
+- the Seebeck coefficient and its slope from a single parabolic band with Fermi–Dirac statistics;
+- the resistivity slope β of the lightly doped crystals from the lattice mobility law linearized at 300 K (Si: T^−2.4 electrons, T^−2.2 holes; Ge: T^−1.66, T^−2.33). The heavily doped crystals keep β = 0, because their impurity-limited mobility changes little near 300 K.
 
 Phonon drag, which adds roughly 10–30 % to the Seebeck coefficient of lightly doped Si at 300 K, is not included, and neither is the lower thermal conductivity of heavily doped crystals.
 
@@ -426,7 +429,7 @@ Every file carries the four magnetic coefficients of the 3D edition (see *Magnet
 |---|---|---|---|---|---|
 | Air (1 atm, still) | 0 | 0 | 0 | 0 | insulator: no current, no effect |
 | Alumina (96% Al2O3) | 0 | 0 | 0 | 0 | insulator: no current, no effect |
-| Aluminum | −3.43·10⁻¹¹ | 0 | −0.00129 | 1.68·10⁻⁶ | R_H measured; S = σ·R_H; m Kohler bound |
+| Aluminum | −3.43·10⁻¹¹ | 0 | −0.00126 | 1.58·10⁻⁶ | R_H measured; S = σ·R_H; m Kohler bound |
 | Bi2Te3 (p-type benchmark) | 3.12·10⁻⁷ | 1.59·10⁻⁶ | 0.013 | 0.000307 | R_H = ±1/(ne); N, S, m model estimates |
 | Bi2Te3 n-type (illustrative) | −3.12·10⁻⁷ | 1.59·10⁻⁶ | −0.013 | 0.000307 | R_H = ±1/(ne); N, S, m model estimates |
 | Bismuth (polycrystalline) | −4.91·10⁻⁷ | 6.4·10⁻⁶ | −0.307 | 0.094 | R_H, N measured (polycrystal); S = σ·R_H; m estimate; weak fields (B ≲ 0.2 T) |
@@ -496,7 +499,7 @@ Every file carries the four magnetic coefficients of the 3D edition (see *Magnet
 - A bare material object without the wrapper is also accepted.
 - The format name stays `TE_2D_material`: the 2D application reads the same files and ignores the magnetic keys.
 
-**Add material json** imports such a file (up to 64 KB). To offer a material under **Select preset…**, place its file in `lib/` and run `python lib/build_catalog.py`, which rewrites `lib/index.json`.
+**Add material json** imports such a file (up to 64 KB). To offer a material under **Select preset…**, place its file in `lib/` and run `python lib/build_catalog.py`, which rewrites `lib/index.json` and `lib/catalog.js` (the copy used when `index.html` is opened from disk).
 
 ## Models, projects and exports
 
@@ -548,11 +551,11 @@ Import requirements:
 Other exports:
 
 - **Full PDF report** opens a printable report; allow pop-ups, then choose **Save as PDF / Print**.
-  - It covers model and convergence, materials and boundary conditions, the terminal spectrum and probe, the equations, and every field map in every representation.
+  - It covers model and convergence (including the linear solvers used), materials and boundary conditions, the terminal voltage and current spectra with the impedance and mean power, the Hall voltage when the field acts, the probe, the equations, and every field map in every representation. Maps mark the electrodes and the Hall probes.
   - Sweep reports start with a Bode summary that follows the selected representation.
   - Reports use a fixed paper palette regardless of the interface theme.
 - **Export results JSON**: the displayed result, or the whole sweep.
-- **Spectrum CSV**: terminal voltage phasors from DC to 3ω.
+- **Spectrum CSV**: terminal voltage and current phasors from DC to 3ω (the current columns follow the voltage columns; `terminal_harmonics.csv` in the project ZIP has the same data).
 - **Export data · all fields**: the project ZIP.
 - **Export Bode CSV**: see *Frequency sweeps and Bode analysis*.
 
@@ -566,4 +569,4 @@ Other exports:
 
 ## Tests
 
-With Node.js 24 or newer, run `node tests/regression.cjs` (42 checks, about ten seconds). The suite covers solver smoke cases and the terminal sign convention, an ideal Peltier leg against its analytic solution, convergence of the module example beyond its optimum current, electrode placement checks, cycle extrapolation and the terminal-voltage tolerance, worker encoding and decoding, spatial phasors, colour-scale ranges and the probe readout, display-state handling, projects with and without results, model and project version checks, rejection of results ZIPs without `project.json`, malformed archive rejection, the material limit after runs, start-up of the full page scripts with the Example selector, agreement of the Solver-tab equations with the report guide, and, for the magnetic field: the banded direct solver, zero-field equivalence, the Hall bar and van der Pauw, Nernst, Ettingshausen and Righi–Leduc benchmarks, Onsager symmetry and the energy balance in a field, validation of the magnetic inputs, the Hall voltage in results, Bode rows, reports and CSV, the Hall-bar example, and the material library: every `lib/` file must parse and validate, and the built-in fallback copies must equal their files. UI tests use DOM and canvas test doubles.
+With Node.js 24 or newer, run `node tests/regression.cjs` (58 checks, about fifteen seconds). The suite covers solver smoke cases and the terminal sign convention, an ideal Peltier leg against its analytic solution, convergence of the module example beyond its optimum current, electrode placement checks, cycle extrapolation and the terminal-voltage tolerance, worker encoding and decoding, spatial phasors, colour-scale ranges and the probe readout, display-state handling, projects with and without results, model and project version checks, rejection of results ZIPs without `project.json`, malformed archive rejection, the material limit after runs, start-up of the full page scripts with the Example selector, agreement of the Solver-tab equations with the report guide, and, for the magnetic field: the banded direct solver, zero-field equivalence, the Hall bar and van der Pauw, Nernst, Ettingshausen and Righi–Leduc benchmarks, Onsager symmetry and the energy balance in a field, validation of the magnetic inputs, the Hall voltage in results, Bode rows, reports and CSV, the Hall-bar example, and the material library: every `lib/` file must parse and validate, and the built-in fallback copies must equal their files. It also covers the terminal current, power and impedance in results, reports and CSVs; Hall voltages reported only when the field acts; an exhausted cycle budget shown as an unconverged result rather than an error; validation after painting and filling; saved-view choices; Bode unwrapping across gaps and the real and imaginary CSV columns; current arrows at the phase of the terminal current; the linear-solver labels; `lib/catalog.js` against the files and as the library of a page opened from disk; consistent metal and silicon data; the 200-character name limit; optional startup scripts; the 256-step 3ω example; the Hall, p-Ge example; and the export menu. UI tests use DOM and canvas test doubles.

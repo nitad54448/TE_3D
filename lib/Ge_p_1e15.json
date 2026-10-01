@@ -16,7 +16,7 @@
     "magnetoresistance": "1/T^2"
   },
   "material": {
-    "name": "Ge p-type, 1e15 cm-3 (lightly doped)",
+    "name": "Ge p-type, 1e15 cm-3",
     "rho": 5323,
     "Cp": 310,
     "k": 58,

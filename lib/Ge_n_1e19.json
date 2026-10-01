@@ -16,7 +16,7 @@
     "magnetoresistance": "1/T^2"
   },
   "material": {
-    "name": "Ge n-type, 1e19 cm-3 (heavily doped)",
+    "name": "Ge n-type, 1e19 cm-3",
     "rho": 5323,
     "Cp": 310,
     "k": 58,

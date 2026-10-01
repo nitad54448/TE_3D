@@ -16,7 +16,7 @@
     "magnetoresistance": "1/T^2"
   },
   "material": {
-    "name": "Bi2Te3 (p-type benchmark)",
+    "name": "Bi2Te3 (p-type)",
     "rho": 7740,
     "Cp": 154.4,
     "k": 1.6,

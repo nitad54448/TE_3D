@@ -1,0 +1,44 @@
+{
+  "format": "TE_2D_material",
+  "version": 1,
+  "referenceTemperature": 300,
+  "units": {
+    "rho": "kg/m^3",
+    "Cp": "J/(kg K)",
+    "k": "W/(m K)",
+    "sigma": "S/m",
+    "alpha": "V/K",
+    "beta": "1/K",
+    "alphaSlope": "V/K^2",
+    "hall": "m^3/C",
+    "nernst": "V/(K T)",
+    "righiLeduc": "1/T",
+    "magnetoresistance": "1/T^2"
+  },
+  "material": {
+    "name": "Ge-p, reference",
+    "rho": 5323,
+    "Cp": 310,
+    "k": 58,
+    "sigma": 8340.3,
+    "alpha": 0.0003282,
+    "beta": 0.00271,
+    "alphaSlope": 4.21e-07,
+    "hall": 7.43e-06,
+    "nernst": 3.08e-06,
+    "righiLeduc": 4.73e-05,
+    "magnetoresistance": 0.00134,
+    "color": "#b07a96"
+  },
+  "notes": "Reference model preset: p-type Ge with 8.4e+17 acceptors/cm^3, fully ionized, at 300 K. rho, Cp and k are the Ioffe room-temperature values (k is for pure Ge; doping lowers k, not included). Mobility 619.7 cm^2/Vs from the Hilsum-type scaling 1900/(1 + N*1e-17)^(1/2), an assumption as in the 1e19 preset: the source gives this form for electrons only; sigma = p e mu (resistivity 0.0120 Ohm cm; scale sigma if the sample's measured resistivity differs). alpha from a single parabolic band with Fermi-Dirac statistics and an acoustic-phonon energy dependence (r = -1/2), reduced Fermi level -1.72; phonon drag is not included. alphaSlope from the same model with Nv proportional to T^1.5. beta = 0.00271 1/K from Matthiessen's rule: the lattice-limited mobility (1776 cm^2/Vs, T^-2.33) carries 35 % of the resistivity, and the impurity-limited part is taken as constant near 300 K, as in the 1e19 preset. Intrinsic conduction (ni = 2e13 cm^-3 at 300 K) becomes significant above roughly 700 K. Magnetic (3D): hall = +1/(p e) (Hall factor 1). nernst, magnetoresistance and righiLeduc are estimates from the single-parabolic-band Boltzmann model with Fermi-Dirac statistics and acoustic-phonon scattering (tau proportional to E^-1/2), the same model as alpha, at reduced Fermi level -1.72: Hall factor 1.17, Hall mobility 723 cm^2/Vs; nernst = (kB/e)*mu_H*[<tau x>/<tau> - <tau^2 x>/<tau^2>] = 3.08e-06 V/(K T); magnetoresistance = 0.00134 1/T^2; righiLeduc = (kappa_e/kappa)*mu_H = 4.73e-05 1/T with kappa_e = L*sigma*T, L = 1.52e-08 W Ohm/K^2. Signs follow this program's convention E_y = N*B*dT/dx; the 'Gerlach' convention used in parts of the literature has the opposite sign. These are order-of-magnitude estimates: multiple anisotropic valleys and mixed scattering change them; at this doping ionized-impurity scattering already limits the mobility and would make the Nernst coefficient smaller or negative, so its value mainly indicates the magnitude. Replace them with measured values when available.",
+  "sources": [
+    {
+      "url": "https://www.ioffe.ru/SVA/NSM/Semicond/Ge/",
+      "properties": "Ioffe NSM archive, Ge basic and thermal parameters at 300 K: density 5.3234 g/cm^3, specific heat 0.31 J/(g K), thermal conductivity 0.58 W/(cm K), Nc = 1.0e19 and Nv = 5.0e18 cm^-3."
+    },
+    {
+      "url": "https://www.ioffe.ru/SVA/NSM/Semicond/Ge/electric.html",
+      "properties": "Electron Hall mobility 3900/(1 + N*1e-17)^(1/2) cm^2/Vs (Hilsum 1974); lattice mobilities 4.9e7*T^-1.66 (electrons) and 1.05e9*T^-2.33 (holes) cm^2/Vs; limits 3900 and 1900 cm^2/Vs."
+    }
+  ]
+}

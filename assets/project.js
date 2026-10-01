@@ -23,7 +23,7 @@
     TE.assertValid2DConfig(c);
     assert(c.materials.every(m => ['rho', 'Cp', 'k', 'sigma', 'alpha'].every(k => typeof m[k] === 'number')), 'The editor requires scalar material reference values.');
     assert([64, 128, 256, 512, 1024].includes(c.samples), 'Unsupported editor time-step count.');
-    assert(c.materials.every(m => typeof m.name === 'string' && m.name.length <= 1000), 'Invalid material name.');
+    assert(c.materials.every(m => typeof m.name === 'string' && m.name.trim().length > 0 && m.name.length <= 200), 'Invalid material name: use 1 to 200 characters.');
     assert(c.description === undefined || typeof c.description === 'string' && c.description.length <= 10000, 'Invalid model description.');
     if (c.sweep?.enabled) TE.validateSweep(c);
     return c;
@@ -191,7 +191,7 @@
   };
   TE.validateProjectView = (view, r) => {
     assert(object(view), 'Invalid saved view.');
-    const choices = {field: ['temperature', 'voltage', 'J', 'Jx', 'Jy', 'qx', 'qy'], profileField: ['temperature', 'voltage', 'J', 'Jx', 'Jy', 'qx', 'qy'], representation: ['amplitude', 'phase', 'real', 'imaginary']};
+    const choices = {field: ['temperature', 'voltage', 'J', 'Jx', 'Jy', 'qx', 'qy'], profileField: ['temperature', 'voltage', 'J', 'Jx', 'Jy', 'qx', 'qy'], representation: ['amplitude', 'phase', 'real', 'imaginary'], terminalTrace: ['voltage', 'current']};
     for (const [key, values] of Object.entries(choices)) if (view[key] !== undefined) assert(values.includes(view[key]), 'Invalid saved ' + key + '.');
     if (view.harmonic !== undefined) assert(Number.isInteger(view.harmonic) && view.harmonic >= 0 && view.harmonic <= 3, 'Invalid saved harmonic.');
     if (view.probe !== undefined) assert(Number.isInteger(view.probe) && view.probe >= 0 && view.probe < r.mesh.x.length, 'Invalid saved probe.');

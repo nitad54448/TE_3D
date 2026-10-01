@@ -176,7 +176,9 @@
       Y = v => H - B - (v - lo) / (hi - lo) * (H - B - T);
     let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${app.esc(label)}"><text x="${L}" y="11" fill="${colors.text}" font-size="9">${app.esc(label)}</text>`;
     for (let i = 0; i < 5; i++) {
-      const v = lo + (hi - lo) * i / 4,
+      // Rounding leaves a tick at e.g. -1.4E-14 instead of 0 for a symmetric waveform: label it 0.
+      const tick = lo + (hi - lo) * i / 4,
+        v = Math.abs(tick) < 1e-9 * (hi - lo) ? 0 : tick,
         xx = x[0] + (x.at(-1) - x[0]) * i / 4;
       s += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="${colors.grid}" stroke-dasharray="3 5"/><text x="${L - 8}" y="${Y(v) + 3}" text-anchor="end" fill="${colors.text}" font-size="9">${app.fmt(v)}</text><text x="${X(xx)}" y="${H - 18}" text-anchor="middle" fill="${colors.text}" font-size="9">${app.fmt(xx)}</text>`;
     }
@@ -224,8 +226,12 @@
       ctx.fillStyle = v === null ? '#56616d' : app.color(hi === lo ? .5 : (v - lo) / (hi - lo));
       ctx.fillRect(left + i * w / c.nx, top + (c.ny - 1 - j) * h / c.ny, w / c.nx + .4, h / c.ny + .4);
     }
+    const arrowPhase = TE.arrowPhase(r, n),
+      cos = Math.cos(arrowPhase.theta),
+      sin = Math.sin(arrowPhase.theta),
+      at = z => z.re * cos - z.im * sin; // Re(Ĵ·exp(iθ))
     if (app.$('arrows').checked) {
-      const vmax = vecX.reduce((s, z, i) => Math.max(s, Math.hypot(z.re, vecY[i].re)), 0),
+      const vmax = vecX.reduce((s, z, i) => Math.max(s, Math.hypot(at(z), at(vecY[i]))), 0),
         stride = Math.max(1, Math.ceil(Math.max(c.nx, c.ny) / 18));
       if (vmax > TE.arrowNoiseFloor(r)) {
         ctx.save();
@@ -235,8 +241,8 @@
         ctx.lineWidth = 1.15;
         for (let j = 0; j < c.ny; j += stride) for (let i = 0; i < c.nx; i += stride) {
           const k = j * c.nx + i,
-            u = vecX[k].re,
-            v = vecY[k].re,
+            u = at(vecX[k]),
+            v = at(vecY[k]),
             length = Math.hypot(u, v);
           if (length < vmax * .005) continue;
           const L = Math.min(w / c.nx, h / c.ny) * stride * .72 * Math.sqrt(length / vmax),
@@ -275,7 +281,8 @@
     app.$('scaleMax').textContent = TE.formatInputNumber(hi);
     app.$('scaleUnit').textContent = unit;
     app.$('fieldCaption').textContent = `${app.$('field').selectedOptions[0].text} · ${n ? n + 'ω' : 'DC'}${n ? ' · ' + (field === 'J' ? 'vector amplitude' : representation) : ''} · ${nodeField ? 'complex phasors averaged per cell; scale spans nodal values' : 'cell-centered field'}${isPhase ? ` · gray: ${phaseMap.masked} cells at/below ${app.fmt(phaseMap.threshold)} field units` : ''}`;
-    app.$('vectorNote').textContent = `Arrows: real current phasor at 0° (direction and relative magnitude). ${globalThis.TETheme && document.documentElement.dataset.theme === 'light' ? 'Dark blue' : 'White'} = source electrode; magenta = sink. Click to move the probe. Vectors below 1E-8 of the strongest current harmonic (or 1E-12 A/m²) are hidden to avoid magnifying numerical noise.`;
+    const arrowTime = `${n === 1 ? 'ωt' : n + 'ωt'} = ${app.fmt(Number((arrowPhase.theta * 180 / Math.PI).toFixed(1)))}°`;
+    app.$('vectorNote').textContent = `Arrows: ${arrowPhase.basis === 'dc' ? 'mean (DC) current' : arrowPhase.basis === 'terminal' ? `current at ${arrowTime}, when the terminal current of this harmonic peaks` : `current at ${arrowTime}, where the current pattern is largest`} (direction and relative magnitude). ${globalThis.TETheme && document.documentElement.dataset.theme === 'light' ? 'Dark blue' : 'White'} = source electrode; magenta = sink. Click to move the probe. Vectors below 1E-8 of the strongest current harmonic (or 1E-12 A/m²) are hidden to avoid magnifying numerical noise.`;
     app.$('probeLabel').textContent = `x = ${app.fmt(pi * c.lx / c.nx * 1000)} mm, y = ${app.fmt(pj * c.ly / c.ny * 1000)} mm`;
     // Probe readout under the map: the displayed field at the probe (same harmonic and representation);
     // DC results also list temperature and potential there.
@@ -294,14 +301,16 @@
     app.$('probeReadout').hidden = false;
     app.$('probeReadout').textContent = `Probe x = ${app.fmt(r.mesh.x[app.probe] * 1000)} mm, y = ${app.fmt(r.mesh.y[app.probe] * 1000)} mm · ${shown} = ${probeValue === null ? '— (below the phase threshold)' : TE.formatInputNumber(probeValue) + ' ' + unit}${extras.join('')}`;
     app.$('timeCharts').hidden = !periodic;
+    const current = app.$('terminalTrace').value === 'current';
+    app.$('terminalTraceNote').textContent = current ? 'Current I, entering the source' : 'V(source) − V(sink)';
     if (periodic) {
       const thermal = TE.historyForPlot(r, r.temperature.map(T => T[app.probe])),
-        electric = TE.historyForPlot(r, r.terminalVoltage.map(v => v * 1000));
+        electric = TE.historyForPlot(r, (current ? r.current : r.terminalVoltage).map(v => v * 1000));
       app.chart('probeChart', thermal.time, thermal.values, 'Temperature · K');
-      app.chart('voltageChart', electric.time, electric.values, 'Terminal voltage · mV');
+      app.chart('voltageChart', electric.time, electric.values, current ? 'Terminal current · mA' : 'Terminal voltage · mV');
     } else {
       app.$('probeChart').textContent = `Steady temperature: ${r.temperature[app.probe].toFixed(6)} K`;
-      app.$('voltageChart').textContent = `Steady terminal voltage: ${r.terminalVoltage.toExponential(6)} V`;
+      app.$('voltageChart').textContent = current ? `Steady terminal current: ${r.current.toExponential(6)} A` : `Steady terminal voltage: ${r.terminalVoltage.toExponential(6)} V`;
     }
   };
   app.drawProfile = function drawProfile() {
