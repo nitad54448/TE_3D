@@ -5,7 +5,33 @@ globalThis.TEApp = {};
   app.$ = id => document.getElementById(id);
   app.esc = TE.escapeHtml;
   app.clock = null;
-  app.checkpoint = null;
+  // Latest saved complete cycle of the running calculation. It is shown only after Stop or an exhausted
+  // cycle budget, so the worker's message stays encoded until then: decoding every checkpoint (tens of MB
+  // at the largest mesh, every few seconds) would stall the page. The solver checked it before sending.
+  let checkpoint = null, encodedCheckpoint = null;
+  Object.defineProperty(app, 'checkpoint', {
+    enumerable: true,
+    get() {
+      if (encodedCheckpoint) {
+        const message = encodedCheckpoint;
+        encodedCheckpoint = null;
+        try {
+          checkpoint = TE.checkResult(TE.decodeWorkerMessage(message).result);
+        } catch {
+          checkpoint = null; // unreadable: treated as no saved cycle
+        }
+      }
+      return checkpoint;
+    },
+    set(value) {
+      encodedCheckpoint = null;
+      checkpoint = value;
+    }
+  });
+  app.holdCheckpoint = message => {
+    encodedCheckpoint = message;
+    checkpoint = null;
+  };
   app.lastMeshEdit = null;
   app.sweepResult = null;
   app.activeSweep = null;

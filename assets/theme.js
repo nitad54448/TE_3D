@@ -1,7 +1,7 @@
 /* Apply before CSS loads to avoid a theme flash; local storage is optional. */
 (function () {
   'use strict';
-  const root = document.documentElement, key = 'TE_2D_theme';
+  const root = document.documentElement, key = 'TE_3D_theme';
   const system = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: light)') : null;
   let saved;
   try { saved = localStorage.getItem(key); } catch {}

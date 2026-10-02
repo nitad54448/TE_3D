@@ -57,7 +57,12 @@
       if (app.$(id).type === 'number') TE.setNumberInput(app.$(id), value);else app.$(id).value = value;
     }
     app.$('excitationMode').value = app.config.sweep?.enabled ? 'sweep' : app.config.mode === 'steady' || typeof v === 'number' || !(v.amplitude ?? 0) ? 'steady' : 'periodic';
-    if (app.config.mode === 'steady') document.querySelectorAll('[data-side] [data-key="amplitude"]').forEach(e => TE.setNumberInput(e, 0));
+    // A steady model ignores thermal AC: clear the peaks that would make it periodic. An inactive convection
+    // side (h = 0) keeps its displayed values, as every disabled field does, for when h is raised again.
+    if (app.config.mode === 'steady') document.querySelectorAll('[data-side]').forEach(card => {
+      const b = app.config.thermal[card.dataset.side];
+      if (b && (b.kind !== 'convection' || b.h > 0)) TE.setNumberInput(card.querySelector('[data-key="amplitude"]'), 0);
+    });
     for (const [id, value] of Object.entries({
       sweepMin: app.config.sweep?.min ?? .1,
       sweepMax: app.config.sweep?.max ?? 100,

@@ -74,10 +74,11 @@
           result
         });
       } catch (error) {
+        // Anything may be thrown; the page always receives a readable message.
         send({
           type: 'error',
-          message: error.message,
-          unconverged: Boolean(error.unconverged)
+          message: String(error?.message ?? error),
+          unconverged: Boolean(error?.unconverged)
         });
       }
     };

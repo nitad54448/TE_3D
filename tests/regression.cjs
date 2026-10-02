@@ -630,11 +630,15 @@ async function check(label, fn) {
     const {plus, minus} = context.TE.hallProbeNodes(c); assert(r.temperature[plus] === 300 && r.temperature[minus] === 300); // isothermal probes
     a.accept(r); assert.equal(e('hMetric').textContent, '-0.042186 mV'); assert(e('hNote').textContent.includes('R_xy = -0.042186 Ω'));
   });
-  await check('The export menu closes after a choice and on Escape', () => {
+  await check('The export menu closes after a choice, on Escape and on a click outside', () => {
     const {context, el: e} = appContext({preset: 'layers'}), menu = e('exportMenu'); menu.contains = () => false;
     menu.hidden = false; menu.listeners.click({target: {closest: () => ({})}}); assert.equal(menu.hidden, true);
     menu.hidden = false; context.document.listeners.keydown({key: 'Enter'}); assert.equal(menu.hidden, false);
     context.document.listeners.keydown({key: 'Escape'}); assert.equal(menu.hidden, true);
+    let focused = 0; e('exportMenuButton').focus = () => focused++; menu.contains = () => true; // focus inside the menu
+    menu.hidden = false; context.document.listeners.pointerdown({target: {closest: () => ({})}}); assert.equal(menu.hidden, false); // in the menu or on its button
+    context.document.listeners.pointerdown({target: {closest: () => null}}); assert.deepEqual([menu.hidden, focused], [true, 0]); // elsewhere: focus stays there
+    menu.hidden = false; context.document.listeners.keydown({key: 'Escape'}); assert.deepEqual([menu.hidden, focused], [true, 1]); // Escape: back to the button
   });
   // ---- Second review: import robustness, warnings, exact inputs, export size, accessibility ----
   await check('Log sweeps saved by another JavaScript engine (last-bit differences) import with their saved frequencies', async () => {
@@ -751,6 +755,92 @@ async function check(label, fn) {
   await check('Fallback material list equals lib/index.json', () => {
     const {app: a} = appContext({preset: 'layers'});
     assert.equal(JSON.stringify(a.libraryFallback), JSON.stringify(JSON.parse(fs.readFileSync(path.join(root, 'lib', 'index.json'), 'utf8')).files));
+  });
+  // ---- Third review: Bode references, legacy ZIP names, lazy checkpoints, worker messages, DC thermal AC ----
+  await check('Bode references: an unconverged point never keeps an inactive reference selectable', () => {
+    const {app: a, el: e} = appContext({preset: 'layers'}), open = c => ({...structuredClone(c), electrical: {...structuredClone(c.electrical), kind: 'open_circuit'}});
+    a.sweepResult = {config: open(config), frequencies: [2, 4], status: 'stopped', message: '',
+      results: results.map((r, i) => ({...structuredClone(r), converged: i === 0, config: open(r.config)}))}; // the second point is unconverged
+    const options = ['drive', 'current', 'terminalVoltage', 'left', 'time'].map(value => ({value}));
+    Object.assign(e('bodeReference'), {options, value: 'time'}); e('bodeQuantity').value = 'terminalVoltage'; e('bodeQuantity').querySelector = () => ({});
+    a.drawBode(); // open circuit: no drive and no terminal current; the left side has no thermal AC
+    assert.deepEqual(options.map(o => Boolean(o.disabled)), [true, true, false, true, false]);
+    a.sweepResult.results.forEach(r => r.converged = false); a.drawBode(); // nothing converged: nothing to decide on
+    assert(options.every(o => !o.disabled));
+  });
+  await check('A project zipped again by Windows Explorer (code-page folder name, no UTF-8 flag) imports', async () => {
+    const files = [...dcFiles, metadataFile('single', 0, 2)].map(f => ({...f, name: 'R_sultats/' + f.name}));
+    const recode = async clearFlag => {
+      const zip = new Uint8Array(await (await TE.zipFiles(files)).arrayBuffer()), view = new DataView(zip.buffer);
+      for (let i = 0; i + 46 < zip.length; i++) {
+        const signature = view.getUint32(i, true), [flag, name] = signature === 0x04034b50 ? [6, 30] : signature === 0x02014b50 ? [8, 46] : [];
+        if (flag === undefined || zip[i + name] !== 0x52 || zip[i + name + 1] !== 0x5f) continue;
+        if (clearFlag) view.setUint16(i + flag, view.getUint16(i + flag, true) & ~0x800, true);
+        zip[i + name + 1] = 0x82; // 'é' in code page 437, not valid UTF-8 on its own
+      }
+      return new Blob([zip]);
+    };
+    assert.deepEqual((await TE.readProjectZip(await recode(true))).result, dc);
+    await assert.rejects(() => recode(false).then(TE.readProjectZip), /not valid UTF-8/); // a name flagged as UTF-8 must be UTF-8
+  });
+  await check('Checkpoints stay encoded until shown; anything thrown in the worker arrives as text', async () => {
+    const c = model(true); c.maxPeriods = 3; for (const side of ['left', 'right', 'top', 'bottom']) c.thermal[side] = {kind: 'flux', value: 0};
+    const messages = [], worker = {self: {postMessage: m => messages.push(structuredClone(m))}};
+    vm.runInNewContext(TE.workerSource(), worker); worker.self.onmessage({data: c});
+    const saved = messages.filter(m => m.type === 'checkpoint'); assert(saved.length >= 2);
+    const {context, app: a, el: e} = appContext({preset: 'layers'}), decode = context.TE.decodeWorkerMessage;
+    let decoded = 0; context.TE.decodeWorkerMessage = m => (m.type === 'checkpoint' && decoded++, decode(m));
+    context.Worker = class { postMessage() { setTimeout(() => messages.filter(m => m.type !== 'error').forEach(data => this.onmessage({data: structuredClone(data)}))); } terminate() {} };
+    a.applyGeometry = () => a.config; a.config = c;
+    a.runSimulation(); await new Promise(resolve => setTimeout(resolve, 20));
+    const whileRunning = decoded; a.cancelSimulation(); // Stop shows the latest saved cycle (and always stops the clock)
+    assert.equal(whileRunning, 0); // received while running, never decoded
+    assert.deepEqual([decoded, e('badge').textContent, a.result.periods], [1, 'STOPPED · UNCONVERGED', saved.at(-1).result.periods]);
+    for (const thrown of ['plain text', null]) {
+      const sent = [], sandbox = vm.createContext({self: {postMessage: m => sent.push(m)}, thrown});
+      vm.runInContext(TE.workerSource(), sandbox); vm.runInContext('TE.run2D = () => { throw thrown; };', sandbox);
+      sandbox.self.onmessage({data: model()});
+      assert.deepEqual(sent.map(m => [m.type, m.message, m.unconverged]), [['error', String(thrown), false]]);
+    }
+  });
+  await check('DC models clear only the thermal AC peaks that would make them periodic', () => {
+    const {context, app: a} = appContext({preset: 'layers'}), fields = {};
+    const card = side => {
+      fields[side] = Object.fromEntries(['kind', 'bias', 'amplitude', 'phase', 'h'].map(key => [key, {value: key === 'kind' ? 'flux' : '0', dataset: {key}, disabled: false}]));
+      return {dataset: {side}, querySelector: selector => fields[side][/data-key="(\w+)"/.exec(selector)[1]], querySelectorAll: () => Object.values(fields[side])};
+    };
+    const cards = ['left', 'right', 'bottom', 'top'].map(card);
+    context.document.querySelectorAll = selector => selector === '[data-side]' ? cards : [];
+    const c = model(); c.thermal.right = {kind: 'convection', value: {bias: 290, amplitude: 5, phase: 0}, h: 0}; // h = 0: inactive
+    Object.assign(fields.left.kind, {value: 'temperature'}); Object.assign(fields.right.kind, {value: 'convection'});
+    for (const side of ['left', 'right']) fields[side].amplitude.value = '5'; // as boundaryForm renders a thermal AC peak
+    a.config = c; a.fill();
+    assert.equal(c.mode, 'steady'); assert.equal(fields.left.amplitude.value, '0'); // active side: cleared, the model stays DC
+    assert.equal(fields.right.amplitude.value, '5'); // inactive side: kept, like any disabled field, for when h is raised
+  });
+  await check('DC results: the selected-time panel is hidden and captions name nodal values, not phasors', () => {
+    const {app: a, el: e} = appContext({preset: 'layers', field: 'temperature', representation: 'amplitude'});
+    a.accept(dc); a.drawResults();
+    assert.equal(e('profileCard').hidden, true);
+    assert(e('fieldCaption').textContent.includes('DC · nodal values averaged per cell') && !e('fieldCaption').textContent.includes('phasor'), e('fieldCaption').textContent);
+    assert.equal(e('representationHelp').textContent, 'Steady result: signed values.');
+    e('profileCaption').textContent = 'untouched'; a.drawProfile(); assert.equal(e('profileCaption').textContent, 'untouched'); // hidden: not drawn
+    a.accept(ac); assert.equal(e('profileCard').hidden, false); // periodic: the panel and its time slider
+    a.drawResults(); assert(e('fieldCaption').textContent.includes('DC · nodal values averaged per cell')); // the mean of a periodic run is real too
+    e('harmonic').value = '1'; a.drawResults(); assert(e('fieldCaption').textContent.includes('1ω · amplitude · complex phasors averaged per cell'), e('fieldCaption').textContent);
+    a.accept(dc); a.clearResults(); assert.equal(e('profileCard').hidden, false); // no result: the page as it opens
+  });
+  await check('Current arrows are greyed out when the displayed component carries no current', () => {
+    const {app: a, el: e} = appContext({preset: 'layers', field: 'temperature', representation: 'amplitude'});
+    a.accept(dc); a.drawResults(); assert.equal(e('arrows').disabled, false); // DC current
+    e('arrows').checked = true;
+    a.accept(ac); a.drawResults(); // the mean of an AC run without DC bias carries no current
+    assert.deepEqual([e('arrows').disabled, e('arrows').checked], [true, true]); // greyed, the choice kept
+    assert(e('vectorNote').textContent.startsWith('No current arrows'), e('vectorNote').textContent);
+    e('harmonic').value = '1'; a.drawResults(); assert.equal(e('arrows').disabled, false);
+    assert(e('vectorNote').textContent.startsWith('Arrows: current at ωt'), e('vectorNote').textContent);
+    e('harmonic').value = '2'; a.drawResults(); assert.equal(e('arrows').disabled, true); // absent from a linear current drive
+    a.clearResults(); assert.equal(e('arrows').disabled, true); // no result, nothing to draw
   });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

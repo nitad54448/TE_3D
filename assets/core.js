@@ -2164,7 +2164,7 @@
             completed++;
           } catch (e) {
             // The final cycle is always checkpointed before the budget error is thrown.
-            if (e.unconverged && last && !last.converged && last.periods === last.config.maxPeriods) {
+            if (e?.unconverged && last && !last.converged && last.periods === last.config.maxPeriods) {
               emit({
                 type: 'sweepPoint',
                 result: last,
@@ -2176,7 +2176,7 @@
             }
             emit({
               type: 'sweepError',
-              message: e.message,
+              message: String(e?.message ?? e),
               ...point
             });
             return;

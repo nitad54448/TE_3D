@@ -119,9 +119,6 @@
   for (const id of ['field', 'harmonic', 'representation', 'arrows', 'terminalTrace']) app.$(id).onchange = app.drawResults;
   for (const id of ['profileField', 'profileTime']) app.$(id).addEventListener('input', app.drawProfile);
   app.$('excitationMode').addEventListener('change', app.modes);
-  app.$('exportProfile').onclick = () => {
-    if (app.result) return app.$('exportZip').onclick();
-  };
   app.$('run').onclick = app.runSimulation;
   app.$('cancel').onclick = app.cancelSimulation;
   // Sweep selections always refer to the saved computed model.
@@ -146,10 +143,11 @@
     app.$('exportMenuButton').setAttribute('aria-expanded', String(open));
   };
   // Choosing an export, or pressing Escape, closes the menu; focus returns to its button when it was inside.
-  const closeExportMenu = () => {
+  // A click anywhere else closes it too and leaves focus where the user clicked.
+  const closeExportMenu = ({restoreFocus = true} = {}) => {
     const menu = app.$('exportMenu');
     if (menu.hidden) return;
-    const refocus = menu.contains(document.activeElement);
+    const refocus = restoreFocus && menu.contains(document.activeElement);
     menu.hidden = true;
     app.$('exportMenuButton').setAttribute('aria-expanded', 'false');
     if (refocus) app.$('exportMenuButton').focus();
@@ -159,6 +157,9 @@
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeExportMenu();
+  });
+  document.addEventListener('pointerdown', e => {
+    if (!e.target?.closest?.('#exportMenu, #exportMenuButton')) closeExportMenu({restoreFocus: false});
   });
   app.$('exportPdf').onclick = app.exportPdf;
   app.$('exportZip').onclick = app.exportZip;
@@ -235,6 +236,8 @@
 
   // Name the example that is actually loaded: browsers (Firefox) may restore an earlier selection on reload.
   app.showPreset(app.defaultPreset);
+  // Likewise for Current arrows: no result yet, so no current to draw, whatever state was restored.
+  app.$('arrows').disabled = true;
   app.fill();
   globalThis.TE_APP_READY = true;
 })(globalThis.TEApp);

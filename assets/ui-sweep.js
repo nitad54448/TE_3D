@@ -155,13 +155,14 @@
     // Real/imaginary parts are signed, so the dB scale does not apply to them.
     app.$('bodeScale').disabled = complex;
     app.$('bodeDb').disabled = complex || app.$('bodeScale').value !== 'db';
-    // Imposed inactive references are unavailable; measured zeros can vary with frequency.
+    // Imposed inactive references are unavailable; measured zeros can vary with frequency. Only converged
+    // points decide: an unconverged point reports its own reason, which would otherwise keep any reference on.
     for (const option of app.$('bodeReference').options) {
       const rows = TE.bodeRows(rs, {
         quantity: 'terminalVoltage',
         reference: option.value
-      });
-      option.disabled = rows.every(r => r.reason && /reference|inactive|Open circuit/i.test(r.reason));
+      }).filter(r => r.converged);
+      option.disabled = rows.length > 0 && rows.every(r => r.reason && /reference|inactive|Open circuit/i.test(r.reason));
     }
     if (!imp && app.$('bodeReference').selectedOptions[0]?.disabled) {
       app.$('bodeReference').value = 'time';

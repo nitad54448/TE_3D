@@ -195,7 +195,10 @@
       vecY = valuesFor('Jy');
     const map = TE.harmonicMap(r, field, n, representation), values = map.values;
     app.$('representation').disabled = field === 'J' || !n;
-    app.$('representationHelp').textContent = field === 'J'
+    // A steady (DC) result is one real state: no harmonics, phasors or representations to mention.
+    app.$('representationHelp').textContent = !periodic
+      ? (field === 'J' ? 'Steady result: current density magnitude √(Jx² + Jy²).' : 'Steady result: signed values.')
+      : field === 'J'
       ? 'Vector norm √(|Jx|² + |Jy|²); not a harmonic of instantaneous |J|. Choose Jx or Jy for phase, Re or Im.'
       : !n ? 'DC is the signed mean value. Select 1ω, 2ω or 3ω for Amplitude, Phase, Re or Im.'
       : 'Complex nodal phasors are averaged per cell before Amplitude, Phase, Re or Im is calculated. Peak convention: u(t) = DC + Re(U exp(inωt)); Im multiplies −sin(nωt).';
@@ -224,10 +227,15 @@
       cos = Math.cos(arrowPhase.theta),
       sin = Math.sin(arrowPhase.theta),
       at = z => z.re * cos - z.im * sin; // Re(Ĵ·exp(iθ))
+    // Arrows need current in the displayed component (DC or one harmonic, over any field map). Without it,
+    // e.g. the mean of an AC run without DC bias, the checkbox is disabled and greyed; its choice is kept.
+    const vmax = vecX.reduce((s, z, i) => Math.max(s, Math.hypot(at(z), at(vecY[i]))), 0),
+      hasCurrent = vmax > TE.arrowNoiseFloor(r);
+    app.$('arrows').disabled = !hasCurrent;
+    app.$('arrows').title = hasCurrent ? '' : 'No current in the displayed component.';
     if (app.$('arrows').checked) {
-      const vmax = vecX.reduce((s, z, i) => Math.max(s, Math.hypot(at(z), at(vecY[i]))), 0),
-        stride = Math.max(1, Math.ceil(Math.max(c.nx, c.ny) / 18));
-      if (vmax > TE.arrowNoiseFloor(r)) {
+      const stride = Math.max(1, Math.ceil(Math.max(c.nx, c.ny) / 18));
+      if (hasCurrent) {
         ctx.save();
         ctx.shadowColor = '#0b141d'; ctx.shadowBlur = 2;
         ctx.strokeStyle = '#f8fafc';
@@ -274,9 +282,12 @@
     app.$('scaleMin').textContent = TE.formatInputNumber(lo);
     app.$('scaleMax').textContent = TE.formatInputNumber(hi);
     app.$('scaleUnit').textContent = unit;
-    app.$('fieldCaption').textContent = `${app.$('field').selectedOptions[0].text} · ${n ? n + 'ω' : 'DC'}${n ? ' · ' + (field === 'J' ? 'vector amplitude' : representation) : ''} · ${nodeField ? 'complex phasors averaged per cell; scale spans nodal values' : 'cell-centered field'}${isPhase ? ` · gray: ${phaseMap.masked} cells at/below ${app.fmt(phaseMap.threshold)} field units` : ''}`;
+    app.$('fieldCaption').textContent = `${app.$('field').selectedOptions[0].text} · ${n ? n + 'ω' : 'DC'}${n ? ' · ' + (field === 'J' ? 'vector amplitude' : representation) : ''} · ${nodeField ? (n ? 'complex phasors' : 'nodal values') + ' averaged per cell; scale spans nodal values' : 'cell-centered field'}${isPhase ? ` · gray: ${phaseMap.masked} cells at/below ${app.fmt(phaseMap.threshold)} field units` : ''}`;
     const arrowTime = `${n === 1 ? 'ωt' : n + 'ωt'} = ${app.fmt(Number((arrowPhase.theta * 180 / Math.PI).toFixed(1)))}°`;
-    app.$('vectorNote').textContent = `Arrows: ${arrowPhase.basis === 'dc' ? 'mean (DC) current' : arrowPhase.basis === 'terminal' ? `current at ${arrowTime}, when the terminal current of this harmonic peaks` : `current at ${arrowTime}, where the current pattern is largest`} (direction and relative magnitude). ${globalThis.TETheme && document.documentElement.dataset.theme === 'light' ? 'Dark blue' : 'White'} = source electrode; magenta = sink. Click to move the probe. Vectors below 1E-8 of the strongest current harmonic (or 1E-12 A/m²) are hidden to avoid magnifying numerical noise.`;
+    const legend = `${globalThis.TETheme && document.documentElement.dataset.theme === 'light' ? 'Dark blue' : 'White'} = source electrode; magenta = sink. Click to move the probe.`;
+    app.$('vectorNote').textContent = hasCurrent
+      ? `Arrows: ${arrowPhase.basis === 'dc' ? 'mean (DC) current' : arrowPhase.basis === 'terminal' ? `current at ${arrowTime}, when the terminal current of this harmonic peaks` : `current at ${arrowTime}, where the current pattern is largest`} (direction and relative magnitude). ${legend} Vectors below 1E-8 of the strongest current harmonic (or 1E-12 A/m²) are hidden to avoid magnifying numerical noise.`
+      : `No current arrows: this component carries no current above 1E-8 of the strongest current harmonic (or 1E-12 A/m²). ${legend}`;
     app.$('probeLabel').textContent = `x = ${app.fmt(pi * c.lx / c.nx * 1000)} mm, y = ${app.fmt(pj * c.ly / c.ny * 1000)} mm`;
     // Probe readout under the map: the displayed field at the probe (same harmonic and representation);
     // DC results also list temperature and potential there.
@@ -308,7 +319,8 @@
     }
   };
   app.drawProfile = function drawProfile() {
-    if (!app.result || app.$('results').hidden) return;
+    // Hidden for DC results (see app.showTimePanel): nothing to draw.
+    if (!app.result || app.$('results').hidden || app.$('profileCard').hidden) return;
     const r = app.result,
       c = r.config,
       periodic = r.method !== 'steady';

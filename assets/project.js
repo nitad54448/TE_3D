@@ -3,12 +3,24 @@
   'use strict';
   const limit = 2 * 1024 * 1024 * 1024, jsonLimit = 256 * 1024 * 1024;
   TE.projectLimits = Object.freeze({archiveBytes: limit, jsonBytes: jsonLimit});
-  const text = new TextDecoder('utf-8', {fatal: true});
+  const text = new TextDecoder('utf-8', {fatal: true}), singleByte = new TextDecoder('windows-1252');
   const crcTable = Uint32Array.from({length: 256}, (_, i) => {
     for (let k = 0; k < 8; k++) i = i & 1 ? 0xedb88320 ^ (i >>> 1) : i >>> 1;
     return i >>> 0;
   });
   const assert = TE.assert;
+  // Entry names are UTF-8 when flag bit 11 is set. Without it the ZIP standard means code page 437, which
+  // Windows Explorer writes for folder names with accents; many other tools write UTF-8 without the flag.
+  // Try UTF-8, then read the bytes one to one: only the ASCII project names are looked up, so any other
+  // name just has to decode the same way each time.
+  const entryName = (bytes, flags) => {
+    try {
+      return text.decode(bytes);
+    } catch {
+      assert(!(flags & 0x800), 'Invalid archive filename: not valid UTF-8.');
+      return singleByte.decode(bytes);
+    }
+  };
   const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
   const same = (a, b) => {
     if (a === b) return true;
@@ -111,7 +123,7 @@
         compressed = dv.getUint32(p + 20, true), length = dv.getUint32(p + 24, true),
         nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), local = dv.getUint32(p + 42, true);
       assert(p + 46 + nl + xl + cl <= size && dv.getUint16(p + 34, true) === 0, 'Invalid ZIP entry dimensions.');
-      const name = text.decode(directory.subarray(p + 46, p + 46 + nl));
+      const name = entryName(directory.subarray(p + 46, p + 46 + nl), flags);
       assert(name && !name.startsWith('/') && !/[\\:\x00-\x1f]/.test(name) && !name.split('/').some(s => s === '..' || s === '.'), 'Unsafe archive filename.');
       assert(!entries.has(name), 'Duplicate archive filename: ' + name);
       assert(!(flags & 1) && [0, 8].includes(method) && length !== 0xffffffff && local + 30 <= offset && compressed <= offset - local - 30, 'Encrypted, ZIP64 or unsupported archive entry.');
@@ -137,7 +149,7 @@
       assert(h.getUint32(0, true) === 0x04034b50 && h.getUint16(6, true) === e.flags && h.getUint16(8, true) === e.method, 'ZIP local header mismatch.');
       const nl = h.getUint16(26, true), xl = h.getUint16(28, true), start = e.local + 30 + nl + xl;
       assert(start + e.compressed <= offset, 'ZIP data extends beyond the archive body.');
-      assert(text.decode(new Uint8Array(await blob.slice(e.local + 30, e.local + 30 + nl).arrayBuffer())) === e.name, 'ZIP filename mismatch.');
+      assert(entryName(new Uint8Array(await blob.slice(e.local + 30, e.local + 30 + nl).arrayBuffer()), e.flags) === e.name, 'ZIP filename mismatch.');
       if (!(e.flags & 8)) assert(h.getUint32(14, true) === e.crc && h.getUint32(18, true) === e.compressed && h.getUint32(22, true) === e.length, 'ZIP local size or checksum mismatch.');
       let payload = blob.slice(start, start + e.compressed), bytes;
       if (e.method === 0) { assert(e.length === e.compressed, 'Stored ZIP size mismatch.'); bytes = new Uint8Array(await payload.arrayBuffer()); }

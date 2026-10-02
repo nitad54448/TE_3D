@@ -70,7 +70,9 @@
     a.href = url;
     a.download = name;
     a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    // Revoke late: a browser may still be reading a large archive, or waiting for the user to allow
+    // downloads from this page (Safari), and a revoked URL makes the download fail.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
   app.projectFileName = () => {
     const now = new Date(),

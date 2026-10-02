@@ -3,7 +3,7 @@
   // One switch for every result export. Bode CSV is re-enabled only by drawBode, which also checks
   // that the current Bode selection is valid.
   app.setExports = function setExports(enabled) {
-    for (const id of ['exportMenuButton', 'exportPdf', 'exportZip', 'exportResults', 'exportCsv', 'exportProfile']) app.$(id).disabled = !enabled;
+    for (const id of ['exportMenuButton', 'exportPdf', 'exportZip', 'exportResults', 'exportCsv']) app.$(id).disabled = !enabled;
     if (enabled) return;
     app.$('bodeCsv').disabled = true;
     app.$('exportMenu').hidden = true;
@@ -20,6 +20,7 @@
     app.probe = Math.floor(r.config.ny / 2) * (r.config.nx + 1) + Math.floor(r.config.nx / 2);
     app.$('harmonic').value = '0';
     app.$('harmonic').disabled = !periodic;
+    app.showTimePanel(periodic);
     app.$('resultEmpty').hidden = true;
     let lo = Infinity, hi = -Infinity;
     for (const row of periodic ? r.temperature : [r.temperature]) {
@@ -81,6 +82,11 @@
     app.$('runProgress').hidden = true;
     app.$('elapsed').textContent = ((performance.now() - app.started) / 1000).toFixed(1) + ' s';
   };
+  // A DC result has a single state, which Spatial response already maps: the selected-time panel is then
+  // hidden. Periodic results, and the page without a result, show it.
+  app.showTimePanel = function showTimePanel(visible) {
+    app.$('profileCard').hidden = !visible;
+  };
   // A displayed result must always belong to the current model. Anything else is cleared.
   app.sameModel = r => Boolean(r?.config) && JSON.stringify(r.config) === JSON.stringify(app.config);
   app.clearResults = function clearResults(message = 'Your response will appear here.') {
@@ -88,6 +94,8 @@
     app.sweepResult = null;
     app.inputsChanged = false;
     app.probe = 0;
+    app.showTimePanel(true);
+    app.$('arrows').disabled = true; // no result: no current to draw (drawResults re-enables it)
     app.$('bodeCard').hidden = true;
     app.$('sweepPoint').innerHTML = '';
     app.setExports(false);
@@ -211,6 +219,11 @@
       // Ignore anything still queued from a worker that was stopped or replaced.
       worker.onmessage = event => {
         if (app.worker !== worker) return;
+        // A checkpoint stays encoded until it is shown (see app.checkpoint in ui-state.js).
+        if (event.data?.type === 'checkpoint') {
+          app.holdCheckpoint(event.data);
+          return;
+        }
         let data;
         try {
           data = TE.decodeWorkerMessage(event.data);
@@ -235,13 +248,6 @@
           app.$('runProgress').max = app.activeSweep ? data.total : data.progress.maxPeriods;
           app.$('runProgress').value = app.activeSweep ? data.index + (data.progress.cycle - 1 + data.progress.step / data.progress.samples) / data.progress.maxPeriods : data.progress.cycle - 1 + data.progress.step / data.progress.samples;
           app.$('runProgress').title = 'Completed frequencies plus current cycle budget; convergence can finish earlier.';
-        } else if (data.type === 'checkpoint') {
-          try {
-            TE.checkResult(data.result);
-            app.checkpoint = data.result;
-          } catch (e) {
-            finishError(e.message);
-          }
         } else if (data.type === 'sweepPoint') {
           try {
             TE.checkResult(data.result);
