@@ -708,7 +708,8 @@
           for (const [side, faces] of Object.entries(m.sides)) {
             const b = this.boundaries[side],
               v = TE.signal2D(b.value, t, this.frequency);
-            if (b.kind === 'temperature' || b.kind === 'convection') TE.assert(v > 0, side + ' temperature must remain strictly above 0 K.');
+            // An inactive convection side (h = 0) adds nothing, so its ambient value is not checked.
+            if (b.kind === 'temperature' || b.kind === 'convection' && (b.h ?? 0) > 0) TE.assert(v > 0, side + ' temperature must remain strictly above 0 K.');
             for (const {
               node,
               A
@@ -1456,7 +1457,9 @@
           }
         }
         if (finite(c.frequency, 'frequency') && (periodic ? c.frequency <= 0 : c.frequency < 0)) add('frequency', periodic ? 'Frequency must be strictly positive for a periodic run.' : 'Frequency cannot be negative.');
-        const samplesOK = integer(c.samples, 'samples', 32, 2048);
+        // 64–1024 steps per period, as the editor offers and project import requires. The solver's own
+        // guard (solvePeriodic) stays wider for direct numerical use.
+        const samplesOK = integer(c.samples, 'samples', 64, 1024);
         if (periodic && nxOK && nyOK && samplesOK && TE.estimateRetainedBytes(c) > TE.retainedMemoryLimit) add('samples', 'Periodic retained data exceeds the 256 MiB estimate. Reduce mesh size or time steps.');
         integer(c.maxPeriods, 'maxPeriods', 3, 1000);
         if (periodic && Number.isFinite(c.frequency) && c.frequency > 0 && samplesOK) {
@@ -1504,7 +1507,9 @@
           thermalSignals[side] = s;
           const h = b.h === undefined ? 0 : b.h;
           if (finite(h, p + '.h') && h < 0) add(p + '.h', 'Convection h must be nonnegative.');
-          if (s && ['temperature', 'convection'].includes(b.kind) && Object.values(s).every(Number.isFinite)) {
+          // A convection side with h = 0 exchanges no heat: its ambient value is inactive and not checked.
+          const active = b.kind === 'temperature' || b.kind === 'convection' && Number.isFinite(h) && h > 0;
+          if (s && active && Object.values(s).every(Number.isFinite)) {
             const low = s.bias - (periodic ? Math.abs(s.amplitude) : 0),
               high = s.bias + (periodic ? Math.abs(s.amplitude) : 0);
             if (low <= 0 || !Number.isFinite(high)) {

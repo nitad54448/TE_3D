@@ -230,7 +230,8 @@
     // Arrows need current in the displayed component (DC or one harmonic, over any field map). Without it,
     // e.g. the mean of an AC run without DC bias, the checkbox is disabled and greyed; its choice is kept.
     const vmax = vecX.reduce((s, z, i) => Math.max(s, Math.hypot(at(z), at(vecY[i]))), 0),
-      hasCurrent = vmax > TE.arrowNoiseFloor(r);
+      noiseFloor = TE.arrowNoiseFloor(r),
+      hasCurrent = vmax > noiseFloor;
     app.$('arrows').disabled = !hasCurrent;
     app.$('arrows').title = hasCurrent ? '' : 'No current in the displayed component.';
     if (app.$('arrows').checked) {
@@ -246,7 +247,8 @@
             u = at(vecX[k]),
             v = at(vecY[k]),
             length = Math.hypot(u, v);
-          if (length < vmax * .005) continue;
+          // Hidden: vectors below the noise floor (as documented), and those under 0.5 % of the longest.
+          if (length < Math.max(noiseFloor, vmax * .005)) continue;
           const L = Math.min(w / c.nx, h / c.ny) * stride * .72 * Math.sqrt(length / vmax),
             dx = u / length * L,
             dy = -v / length * L,

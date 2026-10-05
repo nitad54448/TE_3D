@@ -842,5 +842,25 @@ async function check(label, fn) {
     e('harmonic').value = '2'; a.drawResults(); assert.equal(e('arrows').disabled, true); // absent from a linear current drive
     a.clearResults(); assert.equal(e('arrows').disabled, true); // no result, nothing to draw
   });
+  // ---- Fourth review: per-arrow noise floor, steps per period, inactive convection ----
+  await check('Arrows below the noise floor are hidden one by one; models use 64–1024 steps; inactive convection needs no ambient', () => {
+    // A 2ω component just above the floor: one vector at twice the floor is drawn, one at half the floor is not.
+    const {app: a, el: e} = appContext({preset: 'layers', field: 'temperature', representation: 'amplitude'});
+    const r = structuredClone(ac), floor = TE.arrowNoiseFloor(ac), zero = () => ({re: 0, im: 0});
+    r.harmonics.Jx[2] = r.harmonics.Jx[2].map(zero); r.harmonics.Jy[2] = r.harmonics.Jy[2].map(zero);
+    r.harmonics.Jx[2][0] = {re: 2 * floor, im: 0}; r.harmonics.Jx[2][1] = {re: floor / 2, im: 0};
+    let heads = 0; // each drawn arrow fills one arrowhead
+    e('resultCanvas').getContext = () => new Proxy({}, {get: (t, k) => k === 'fill' ? () => heads++ : k === 'measureText' ? () => ({width: 10}) : k in t ? t[k] : noop, set: (t, k, v) => (t[k] = v, true)});
+    a.accept(r); e('harmonic').value = '2'; e('arrows').checked = true; a.drawResults();
+    assert.deepEqual([e('arrows').disabled, heads], [false, 1]);
+    // Model validation follows the editor, project import and the README: 64 to 1024 steps per period.
+    const steps = n => TE.validate2DConfig({...model(true), samples: n}).some(i => i.path === 'samples');
+    assert.deepEqual([32, 64, 1024, 2048].map(steps), [true, false, false, true]);
+    // Convection with h = 0 exchanges no heat: its ambient is neither checked nor used; with h > 0 it is checked.
+    const inactive = model(); inactive.thermal.top = {kind: 'convection', value: {bias: 0, amplitude: 0, phase: 0}, h: 0};
+    assert.equal(TE.validate2DConfig(inactive).length, 0); assert.deepEqual(TE.run2D(inactive).temperature, dc.temperature);
+    const active = structuredClone(inactive); active.thermal.top.h = 10;
+    assert(TE.validate2DConfig(active).some(i => i.path === 'thermal.top.value.bias'));
+  });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});
