@@ -141,30 +141,49 @@ async function check(label, fn) {
     assert(Math.abs(TE.harmonicMap(r, 'temperature', 1, 'phase').values[0] - 126.86989764584402) < 1e-10);
   });
   await check('Probe readout under the map shows the displayed field at the probe', () => {
-    const f = TE.formatInputNumber, readout = () => el('probeReadout').textContent;
+    // Values are shown with the scale of their field: one unit prefix and one last digit (3 significant digits of the span).
+    const readout = () => el('probeReadout').textContent,
+      f = (r, key, n, representation, unit) => {const {lo, hi} = TE.harmonicMap(r, key, n, representation).range; return app.fieldFormat(lo, hi, unit).text;};
     app.result = dc; setView(); el('results').hidden = false; app.drawResults(); // probe node 7: x = 0.5 mm, top edge
     assert.equal(el('probeReadout').hidden, false);
-    assert.equal(readout(), `Probe x = 0.5 mm, y = 1 mm · Temperature · DC = ${f(dc.temperature[7])} K · V = ${f(dc.voltage[7])} V`);
+    assert.equal(readout(), 'Probe x = 0.5 mm, y = 1 mm · Temperature · DC = 300.02500 K · V = 1.000 mV'); // T spans 0.025 K, V 2 mV
+    assert.equal(el('scaleMax').textContent, '300.02500'); assert.equal(el('scaleUnit').textContent, 'K');
     app.probe = 0; app.drawResults(); assert(readout().startsWith('Probe x = 0 mm, y = 0 mm'));
     // Cell fields: mean of the cells sharing the probe node (node 1 touches cells 0 and 1).
     assert.deepEqual(TE.probePhasor(dc, 'qx', 0, 1), {re: (dc.qx[0] + dc.qx[1]) / 2, im: 0});
     Object.assign(el('field'), {value: 'qx', selectedOptions: [{text: 'Heat flux qx'}]}); app.probe = 1; app.drawResults();
-    assert(readout().includes(`Heat flux qx · DC = ${f((dc.qx[0] + dc.qx[1]) / 2)} W/m² · T = ${f(dc.temperature[1])} K · V = `));
+    assert(readout().includes(`Heat flux qx · DC = ${f(dc, 'qx', 0, 'amplitude', 'W/m²')((dc.qx[0] + dc.qx[1]) / 2)} · T = 300.01875 K · V = `), readout());
     // Periodic: same harmonic and representation as the map; no DC extras.
     app.result = ac; setView(); app.drawResults();
-    assert.equal(readout(), `Probe x = 0.5 mm, y = 1 mm · Temperature · 2ω imaginary part = ${f(ac.harmonics.temperature[2][7].im)} K`);
+    assert.equal(readout(), `Probe x = 0.5 mm, y = 1 mm · Temperature · 2ω imaginary part = ${f(ac, 'temperature', 2, 'imaginary', 'K')(ac.harmonics.temperature[2][7].im)}`);
     el('representation').value = 'phase'; app.drawResults();
-    assert(readout().endsWith(`2ω phase = ${f(app.phase(ac.harmonics.temperature[2][7]))} °`));
+    assert(readout().endsWith(`2ω phase = ${app.fixed(app.phase(ac.harmonics.temperature[2][7]), .1)} °`), readout()); // 0.1° over a ±180° scale
     el('harmonic').value = '1'; app.drawResults(); // no 1ω temperature without Seebeck/TCR: masked like the map
     assert(readout().endsWith('1ω phase = — (below the phase threshold)'));
     for (const id of ['resultCanvas', 'profileCanvas']) el(id).getContext = () => ({clearRect: noop});
     app.clearResults(); assert.equal(el('probeReadout').hidden, true); assert.equal(readout(), '');
   });
+  await check('Displayed numbers carry the digits the result resolves, not the full binary value', () => {
+    assert.deepEqual([app.fmt(229.6061283), app.fmt(.02434741386), app.fmt(2e6), app.fmt(-1.2481e-4), app.fmt(0), app.fmt(-1e-20 * 0)], ['229.6', '0.02435', '2E6', '-1.248E-4', '0', '0']);
+    const leg = app.rangeFormat(229.6061283, 300.1273); // a 70.5 K span: 0.01 K, both ends on the same digit
+    assert.deepEqual([leg(229.6061283), leg(300.1273), leg(276.2344905)], ['229.61', '300.13', '276.23']);
+    const small = app.rangeFormat(300, 300.0000124); // a 12 µK span keeps the digits that show it
+    assert.deepEqual([small(300), small(300.0000124)], ['300.0000000', '300.0000124']);
+    assert.equal(app.rangeFormat(300, 300)(300), '300'); // uniform field
+    const V = app.fieldFormat(0, .05143, 'V'); // a voltage scale in mV
+    assert.deepEqual([V.unit, V.format(0), V.text(.02434741386)], ['mV', '0', '24.35 mV']);
+    const J = app.fieldFormat(-2.5e6, 2.5e6, 'A/m²'), phase = app.fieldFormat(-180, 180, '°');
+    assert.deepEqual([J.text(1234567.89), J.text(-3e-9), phase.text(-17.2345)], ['1.235 MA/m²', '0 MA/m²', '-17.2 °']);
+    assert.deepEqual([app.si(2, 'A'), app.si(.0514304, 'V'), app.si(1.0286e-1, 'W'), app.si(-4.2186e-5, 'V'), app.si(0, 'V'), app.si(300.12, 'K')],
+      ['2 A', '51.43 mV', '102.9 mW', '-42.19 µV', '0 V', '300.1 K']);
+    assert.deepEqual([app.fixed(1.0000001e-7, 1e-10), app.fixed(-4e-16, 5.1e-5)], ['1.000E-7', '0']); // E notation; noise below the last digit is 0
+    assert.equal(app.tick(300.00012, 300, 300.0004), '300.00012'); // axis ticks: two significant digits of the span
+  });
   await check('Colour scales of nodal fields span the nodal extremes', () => {
     const map = TE.harmonicMap(dc, 'temperature', 0);
     assert.equal(map.range.lo, 300); assert(Math.min(...map.values) > 300);
     assert.equal(map.range.hi, Math.max(...dc.temperature)); assert.deepEqual(TE.surfaceField(dc, 'temperature').range, map.range);
-    app.result = dc; setView(); app.drawResults(); assert.equal(el('scaleMin').textContent, '300');
+    app.result = dc; setView(); app.drawResults(); assert.equal(el('scaleMin').textContent, '300.00000'); // the last digit of the 0.025 K span
     assert.deepEqual(TE.harmonicMap(ac, 'temperature', 1, 'phase').range, {lo: -180, hi: 180});
   });
   await check('Sweep selection preserves harmonic, probe, representation and time fraction', () => {
@@ -275,7 +294,7 @@ async function check(label, fn) {
     assert.equal((await TE.readProjectZip(zip)).result, null); assert(el('status').textContent.includes('inputs changed after the last run'));
     el('projectFile').files = [zip]; await app.importProject();
     assert.deepEqual(app.config, model()); assert.equal(app.result, null); assert.equal(el('resultEmpty').hidden, false);
-    assert(el('status').textContent.startsWith('Imported project without results'));
+    assert(el('status').textContent.startsWith('Imported project without results'), el('status').textContent);
     const mixed = [{name: 'project.json', data: JSON.stringify({format: 'thermoelectric-lab-project', version: TE.projectVersion, kind: 'model'})},
       {name: 'model.json', data: JSON.stringify(dc.config)}, {name: 'results.json', data: JSON.stringify(dc)}];
     await assert.rejects(() => TE.zipFiles(mixed).then(TE.readProjectZip), /Project kind disagrees/);
@@ -534,11 +553,11 @@ async function check(label, fn) {
     assert(Math.abs(t.impedance.re - .01) < 1e-12 && Math.abs(t.impedance.im) < 1e-12 && Math.abs(t.meanPower - 2e-4) < 1e-12);
     assert.equal(TE.terminalQuantities(dc).impedance, null); assert.equal(TE.terminalQuantities(dc).meanPower, dc.electricalPower);
     setView(); app.accept(ac);
-    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, '0.000° · mean absorbed power 0.2 mW');
+    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, '0.00° · mean absorbed power 200 µW');
     assert(el('spectrum').innerHTML.includes('<td>Current I · A</td><td>1ω</td>') && el('spectrum').innerHTML.includes('<td>Impedance Z = U/I · Ω</td>'));
     const v = model(); v.electrical = {...v.electrical, kind: 'voltage', value: {bias: .002, amplitude: 0, phase: 0}};
     app.accept(TE.run2D(v)); // voltage control: the current is the response
-    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, 'absorbed power U·I 0.4 mW');
+    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, 'absorbed power U·I 400 µW');
     const o = model(); o.electrical = {...o.electrical, kind: 'open_circuit'}; app.accept(TE.run2D(o));
     assert.equal(el('iNote').textContent, 'Open circuit: no terminal current or power');
     const report = acFiles.find(f => f.name === 'report.html').data;
@@ -647,7 +666,7 @@ async function check(label, fn) {
     vm.runInNewContext(fs.readFileSync(path.join(root, 'assets', 'startup.js'), 'utf8'), page);
     handlers.error({target: {tagName: 'SCRIPT', src: 'lib/catalog.js', hasAttribute: name => name === 'data-optional'}}); assert.equal(box.hidden, true);
     handlers.error({target: {tagName: 'SCRIPT', src: 'assets/core.js', hasAttribute: () => false}}); assert(!box.hidden && box.textContent.includes('assets/core.js'));
-    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js?v=3.2" data-optional>'));
+    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js?v=3.3" data-optional>'));
   });
   await check('The 3ω example uses 256 steps per period', async () => {
     const {app: a, el: e} = appContext({preset: 'layers'}); e('preset').value = 'nonlinear'; await a.loadPreset();
@@ -659,7 +678,7 @@ async function check(label, fn) {
     const c = a.config, r = context.TE.run2D(c), VH = context.TE.hallVoltage(r).value, ideal = -c.materials[0].hall * c.electrical.value.bias * c.magneticField / c.depth;
     close(VH, -42.186e-6, 1e-4, 'saved project V_H'); close(VH, ideal, .01, 'long bar −R_H·I·B/t'); // narrow contacts: 0.6 % below
     const {plus, minus} = context.TE.hallProbeNodes(c); assert(r.temperature[plus] === 300 && r.temperature[minus] === 300); // isothermal probes
-    a.accept(r); assert.equal(e('hMetric').textContent, '-0.042186 mV'); assert(e('hNote').textContent.includes('R_xy = -0.042186 Ω'));
+    a.accept(r); assert.equal(e('hMetric').textContent, '-42.19 µV'); assert(e('hNote').textContent.includes('R_xy = -42.19 mΩ'));
   });
   await check('The export menu closes after a choice, on Escape and on a click outside', () => {
     const {context, el: e} = appContext({preset: 'layers'}), menu = e('exportMenu'); menu.contains = () => false;

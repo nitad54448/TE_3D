@@ -31,14 +31,15 @@
       v = hs[periodic ? 1 : 0],
       iz = terminal.current[periodic ? 1 : 0];
     app.$('vLabel').textContent = 'TERMINAL VOLTAGE · ' + (periodic ? '1ω' : 'DC');
-    app.$('vMetric').textContent = app.fmt((periodic ? app.amp(v) : v.re) * 1000) + ' mV';
+    app.$('vMetric').textContent = app.si(periodic ? app.amp(v) : v.re, 'V');
     app.$('vPhase').textContent = periodic ? app.degrees(v) + '° · peak amplitude' : 'Signed stationary voltage';
     // Terminal current entering the source: the response under voltage control, the drive under current control.
     app.$('iLabel').textContent = 'TERMINAL CURRENT · ' + (periodic ? '1ω' : 'DC');
-    app.$('iMetric').textContent = app.fmt((periodic ? app.amp(iz) : iz.re) * 1000) + ' mA';
+    app.$('iMetric').textContent = app.si(periodic ? app.amp(iz) : iz.re, 'A');
     app.$('iNote').textContent = terminal.openCircuit ? 'Open circuit: no terminal current or power'
-      : (periodic && app.amp(iz) > terminal.currentFloor ? app.degrees(iz) + '° · ' : '') + (periodic ? 'mean absorbed power ' : 'absorbed power U·I ') + app.fmt(terminal.meanPower * 1000) + ' mW';
-    app.$('tMetric').textContent = lo.toFixed(3) + '–' + hi.toFixed(3) + ' K';
+      : (periodic && app.amp(iz) > terminal.currentFloor ? app.degrees(iz) + '° · ' : '') + (periodic ? 'mean absorbed power ' : 'absorbed power U·I ') + app.si(terminal.meanPower, 'W');
+    const temperatureText = app.rangeFormat(lo, hi);
+    app.$('tMetric').textContent = lo === hi ? temperatureText(lo) + ' K' : temperatureText(lo) + '–' + temperatureText(hi) + ' K';
     // Hall voltage V(P+) − V(P−) and R_xy = V_H/I, only when the field acts transversely; otherwise the
     // probe difference is not a Hall voltage. Rounding noise (below 1E-12 of the terminal voltage) shows as zero.
     const hallInfo = TE.hallSummary(r);
@@ -51,22 +52,27 @@
         noise = app.amp(raw) <= 1e-12 * Math.max(periodic ? app.amp(v) : Math.abs(v.re), 1e-15),
         hz = noise ? {re: 0, im: 0} : raw,
         rxy = hallInfo.resistance && noise ? {re: 0, im: 0} : hallInfo.resistance;
-      app.$('hMetric').textContent = app.fmt((periodic ? app.amp(hz) : hz.re) * 1000) + ' mV';
+      app.$('hMetric').textContent = app.si(periodic ? app.amp(hz) : hz.re, 'V');
       app.$('hNote').textContent = (periodic && app.amp(hz) > 1e-16 ? app.degrees(hz) + '° · ' : '') +
-        (rxy === null ? 'V(P+) − V(P−)' : periodic ? `R_xy = ${app.fmt(app.amp(rxy))} Ω ∠ ${app.degrees(rxy, 1)}°` : `R_xy = ${app.fmt(rxy.re)} Ω`) + ` · Bz = ${app.fmt(r.config.magneticField ?? 0)} T`;
+        (rxy === null ? 'V(P+) − V(P−)' : periodic ? `R_xy = ${app.si(app.amp(rxy), 'Ω')} ∠ ${app.degrees(rxy, 1)}°` : `R_xy = ${app.si(rxy.re, 'Ω')}`) + ` · Bz = ${app.fmt(r.config.magneticField ?? 0)} T`;
     }
     app.$('cycleMetric').textContent = periodic ? r.periods + ' cycles' : 'DC';
-    app.$('errorMetric').textContent = periodic ? (r.converged ? 'Normalized error ' : 'Unconverged cycle · error ') + (r.periodicError === null ? 'not available' : r.periodicError.toExponential(2)) + (r.converged ? ' ≤ 1' : '') : 'Energy residual ' + r.energyResidual.toExponential(2) + ' W';
+    app.$('errorMetric').textContent = periodic ? (r.converged ? 'Normalized error ' : 'Unconverged cycle · error ') + (r.periodicError === null ? 'not available' : app.fmt(r.periodicError, 3)) + (r.converged ? ' ≤ 1' : '') : 'Energy residual ' + app.fmt(r.energyResidual, 3) + ' W';
     const diagnostics = r.diagnostics;
     app.$('diagnosticsNote').textContent = diagnostics
-      ? (periodic ? `Cycle errors: temperature ${diagnostics.temperatureCycleError === null ? 'pending' : app.fmt(diagnostics.temperatureCycleError)}; terminal harmonics ${diagnostics.terminalHarmonicError === null ? 'pending' : app.fmt(diagnostics.terminalHarmonicError)}. ` +
+      ? (periodic ? `Cycle errors: temperature ${diagnostics.temperatureCycleError === null ? 'pending' : app.fmt(diagnostics.temperatureCycleError, 3)}; terminal harmonics ${diagnostics.terminalHarmonicError === null ? 'pending' : app.fmt(diagnostics.terminalHarmonicError, 3)}. ` +
         (diagnostics.cycleExtrapolations ? `Cycle start extrapolated ${diagnostics.cycleExtrapolations}× (acceptance uses unextrapolated cycles). ` : '') : '') +
-        `Heat balance: normalized residual ${app.fmt(diagnostics.heatResidualNormalized)}; maximum free-node residual ${app.fmt(diagnostics.heatResidualWatts)} W. Acceptance requires normalized errors ≤ 1.`
+        `Heat balance: normalized residual ${app.fmt(diagnostics.heatResidualNormalized, 3)}; maximum free-node residual ${app.fmt(diagnostics.heatResidualWatts, 3)} W. Acceptance requires normalized errors ≤ 1.`
       : '';
-    const spectrumRow = (label, z, n, floor) => `<tr><td>${label}</td><td>${n ? n + 'ω' : 'DC'}</td><td>${n ? app.fmt(n * r.frequency) : '0'} Hz</td><td>${app.amp(z).toExponential(5)}</td><td>${app.amp(z) > floor ? app.degrees(z) + '°' : '—'}</td><td>${z.re.toExponential(5)}</td><td>${z.im.toExponential(5)}</td></tr>`;
-    app.$('spectrum').innerHTML = hs.map((z, n) => spectrumRow('Voltage U · V', z, n, 1e-16)).join('') +
-      terminal.current.map((z, n) => spectrumRow('Current I · A', z, n, terminal.currentFloor)).join('') +
-      (terminal.impedance ? spectrumRow('Impedance Z = U/I · Ω', terminal.impedance, 1, 0) : '');
+    // Peak, Re and Im to 4 significant digits of the peak (one last digit per row). A harmonic below 1E-9 of the
+    // largest harmonic of its quantity is rounding noise of the solution: it shows as 0, without a phase.
+    const spectrumRow = (label, z, n, floor, largest) => {
+      const peak = app.amp(z), noise = !(peak > Math.max(floor, 1e-9 * largest)), part = v => noise ? '0' : app.fixed(v, peak / 1000);
+      return `<tr><td>${label}</td><td>${n ? n + 'ω' : 'DC'}</td><td>${n ? app.fmt(n * r.frequency) : '0'} Hz</td><td>${part(peak)}</td><td>${noise ? '—' : app.degrees(z) + '°'}</td><td>${part(z.re)}</td><td>${part(z.im)}</td></tr>`;
+    }, largest = row => Math.max(...row.map(app.amp));
+    app.$('spectrum').innerHTML = hs.map((z, n) => spectrumRow('Voltage U · V', z, n, 1e-16, largest(hs))).join('') +
+      terminal.current.map((z, n) => spectrumRow('Current I · A', z, n, terminal.currentFloor, largest(terminal.current))).join('') +
+      (terminal.impedance ? spectrumRow('Impedance Z = U/I · Ω', terminal.impedance, 1, 0, 0) : '');
     app.setExports(!app.inputsChanged);
     app.$('exportStatus').textContent = '';
     if (previous) app.restoreResultView(previous, r);
@@ -243,7 +249,7 @@
             app.statusKey = key;
             app.statusAt = now;
             const prefix = app.activeSweep ? `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz · ` : '';
-            app.$('status').textContent = prefix + `Cycle ${data.progress.cycle}/${data.progress.maxPeriods} · step ${data.progress.step}/${data.progress.samples}${data.progress.error === null ? '' : ' · normalized error ' + data.progress.error.toExponential(2)}`;
+            app.$('status').textContent = prefix + `Cycle ${data.progress.cycle}/${data.progress.maxPeriods} · step ${data.progress.step}/${data.progress.samples}${data.progress.error === null ? '' : ' · normalized error ' + app.fmt(data.progress.error, 3)}`;
           }
           app.$('runProgress').max = app.activeSweep ? data.total : data.progress.maxPeriods;
           app.$('runProgress').value = app.activeSweep ? data.index + (data.progress.cycle - 1 + data.progress.step / data.progress.samples) / data.progress.maxPeriods : data.progress.cycle - 1 + data.progress.step / data.progress.samples;

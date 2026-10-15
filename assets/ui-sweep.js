@@ -114,7 +114,7 @@
     for (let i = 0; i <= 4; i++) {
       const v = lo + (hi - lo) * i / 4,
         f = start + (end - start) * i / 4;
-      svg += `<path d="M${L} ${Y(v)}H${W - R}" stroke="${colors.grid}"/><text x="${L - 7}" y="${Y(v) + 3}" text-anchor="end" fill="${colors.text}" font-size="10">${app.fmt(v)}</text><text x="${L + (W - L - R) * i / 4}" y="${H - 25}" text-anchor="middle" fill="${colors.text}" font-size="10">${app.fmt(log ? 10 ** f : f)}</text>`;
+      svg += `<path d="M${L} ${Y(v)}H${W - R}" stroke="${colors.grid}"/><text x="${L - 7}" y="${Y(v) + 3}" text-anchor="end" fill="${colors.text}" font-size="10">${app.tick(v, lo, hi)}</text><text x="${L + (W - L - R) * i / 4}" y="${H - 25}" text-anchor="middle" fill="${colors.text}" font-size="10">${app.fmt(log ? 10 ** f : f)}</text>`;
     }
     let path = '',
       pen = false;

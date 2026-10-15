@@ -174,7 +174,7 @@
       const tick = lo + (hi - lo) * i / 4,
         v = Math.abs(tick) < 1e-9 * (hi - lo) ? 0 : tick,
         xx = x[0] + (x.at(-1) - x[0]) * i / 4;
-      s += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="${colors.grid}" stroke-dasharray="3 5"/><text x="${L - 8}" y="${Y(v) + 3}" text-anchor="end" fill="${colors.text}" font-size="9">${app.fmt(v)}</text><text x="${X(xx)}" y="${H - 18}" text-anchor="middle" fill="${colors.text}" font-size="9">${app.fmt(xx)}</text>`;
+      s += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="${colors.grid}" stroke-dasharray="3 5"/><text x="${L - 8}" y="${Y(v) + 3}" text-anchor="end" fill="${colors.text}" font-size="9">${app.tick(v, lo, hi)}</text><text x="${X(xx)}" y="${H - 18}" text-anchor="middle" fill="${colors.text}" font-size="9">${app.fmt(xx)}</text>`;
     }
     if (x.length === 1) s += `<circle cx="${X(x[0])}" cy="${Y(y[0])}" r="3" fill="${colors.line}"/>`;
     el.innerHTML = s + `<path d="${x.map((v, i) => `${i ? 'L' : 'M'}${X(v)},${Y(y[i])}`).join(' ')}" fill="none" stroke="${colors.line}" stroke-width="2"/><text x="${W - R}" y="${H - 2}" text-anchor="end" fill="${colors.text}" font-size="9">${app.esc(xLabel)}</text></svg>`;
@@ -281,9 +281,11 @@
     ctx.arc(left + pi / c.nx * w, top + h - pj / c.ny * h, 5, 0, 2 * Math.PI);
     ctx.strokeStyle = '#142f43'; ctx.lineWidth = 4; ctx.stroke();
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-    app.$('scaleMin').textContent = TE.formatInputNumber(lo);
-    app.$('scaleMax').textContent = TE.formatInputNumber(hi);
-    app.$('scaleUnit').textContent = unit;
+    // Scale ends and probe value share one unit prefix and one last digit, set by the span of the scale.
+    const scale = app.fieldFormat(lo, hi, unit);
+    app.$('scaleMin').textContent = scale.format(lo);
+    app.$('scaleMax').textContent = scale.format(hi);
+    app.$('scaleUnit').textContent = scale.unit;
     app.$('fieldCaption').textContent = `${app.$('field').selectedOptions[0].text} · ${n ? n + 'ω' : 'DC'}${n ? ' · ' + (field === 'J' ? 'vector amplitude' : representation) : ''} · ${nodeField ? (n ? 'complex phasors' : 'nodal values') + ' averaged per cell; scale spans nodal values' : 'cell-centered field'}${isPhase ? ` · gray: ${phaseMap.masked} cells at/below ${app.fmt(phaseMap.threshold)} field units` : ''}`;
     const arrowTime = `${n === 1 ? 'ωt' : n + 'ωt'} = ${app.fmt(Number((arrowPhase.theta * 180 / Math.PI).toFixed(1)))}°`;
     const legend = `${globalThis.TETheme && document.documentElement.dataset.theme === 'light' ? 'Dark blue' : 'White'} = source electrode; magenta = sink. Click to move the probe.`;
@@ -304,9 +306,12 @@
     }
     const shown = `${app.$('field').selectedOptions[0].text} · ${n ? n + 'ω' : 'DC'}${n ? ' ' + (field === 'J' ? 'vector amplitude' : {amplitude: 'amplitude', phase: 'phase', real: 'real part', imaginary: 'imaginary part'}[representation]) : ''}`,
       extras = periodic ? [] : [['temperature', 'T', 'K'], ['voltage', 'V', 'V']].filter(([key]) => key !== field)
-        .map(([key, symbol, u]) => ` · ${symbol} = ${TE.formatInputNumber(r[key][app.probe])} ${u}`);
+        .map(([key, symbol, u]) => {
+          const {lo: a, hi: b} = app.extent(r[key]);
+          return ` · ${symbol} = ${app.fieldFormat(a, b, u).text(r[key][app.probe])}`;
+        });
     app.$('probeReadout').hidden = false;
-    app.$('probeReadout').textContent = `Probe x = ${app.fmt(r.mesh.x[app.probe] * 1000)} mm, y = ${app.fmt(r.mesh.y[app.probe] * 1000)} mm · ${shown} = ${probeValue === null ? '— (below the phase threshold)' : TE.formatInputNumber(probeValue) + ' ' + unit}${extras.join('')}`;
+    app.$('probeReadout').textContent = `Probe x = ${app.fmt(r.mesh.x[app.probe] * 1000)} mm, y = ${app.fmt(r.mesh.y[app.probe] * 1000)} mm · ${shown} = ${probeValue === null ? '— (below the phase threshold)' : scale.text(probeValue)}${extras.join('')}`;
     app.$('timeCharts').hidden = !periodic;
     const current = app.$('terminalTrace').value === 'current';
     app.$('terminalTraceNote').textContent = current ? 'Current I, entering the source' : 'V(source) − V(sink)';
@@ -316,8 +321,9 @@
       app.chart('probeChart', thermal.time, thermal.values, 'Temperature · K');
       app.chart('voltageChart', electric.time, electric.values, current ? 'Terminal current · mA' : 'Terminal voltage · mV');
     } else {
-      app.$('probeChart').textContent = `Steady temperature: ${r.temperature[app.probe].toFixed(6)} K`;
-      app.$('voltageChart').textContent = current ? `Steady terminal current: ${r.current.toExponential(6)} A` : `Steady terminal voltage: ${r.terminalVoltage.toExponential(6)} V`;
+      const {lo: a, hi: b} = app.extent(r.temperature);
+      app.$('probeChart').textContent = `Steady temperature: ${app.fieldFormat(a, b, 'K').text(r.temperature[app.probe])}`;
+      app.$('voltageChart').textContent = current ? `Steady terminal current: ${app.si(r.current, 'A')}` : `Steady terminal voltage: ${app.si(r.terminalVoltage, 'V')}`;
     }
   };
   app.drawProfile = function drawProfile() {
@@ -347,9 +353,10 @@
       ctx.fillRect(left + i * w / c.nx, top + (c.ny - j - 1) * h / c.ny, w / c.nx + .4, h / c.ny + .4);
     }
     app.contacts(f, c);
-    app.$('surfaceMin').textContent = TE.formatInputNumber(lo);
-    app.$('surfaceMax').textContent = TE.formatInputNumber(hi);
-    app.$('surfaceUnit').textContent = surface.unit;
+    const scale = app.fieldFormat(lo, hi, surface.unit);
+    app.$('surfaceMin').textContent = scale.format(lo);
+    app.$('surfaceMax').textContent = scale.format(hi);
+    app.$('surfaceUnit').textContent = scale.unit;
     app.$('profileCaption').textContent = (periodic ? `t = ${app.fmt(r.time[sample] * 1000)} ms · phase ${app.fmt(360 * r.frequency * r.time[sample])}° · sample ${sample + 1}/${r.samples}` : 'DC stationary') + ` · ${surface.nodal ? 'nodal values averaged per cell; scale spans nodal values' : 'cell-centered values'}` + (r.converged ? '' : ' · UNCONVERGED');
   };
 })(globalThis.TEApp);
