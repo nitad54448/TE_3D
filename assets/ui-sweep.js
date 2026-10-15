@@ -109,12 +109,13 @@
     const fx = v => log ? Math.log10(v) : v,
       start = fx(rows[0].frequency),
       end = fx(rows.at(-1).frequency),
-      X = v => L + (fx(v) - start) / (end - start || 1) * (W - L - R),
+      // A single point (the first one of a running sweep) sits mid-axis with one tick, not five equal ones.
+      X = v => end === start ? L + (W - L - R) / 2 : L + (fx(v) - start) / (end - start) * (W - L - R),
       Y = v => H - B - (v - lo) / (hi - lo) * (H - B - T);
     for (let i = 0; i <= 4; i++) {
       const v = lo + (hi - lo) * i / 4,
         f = start + (end - start) * i / 4;
-      svg += `<path d="M${L} ${Y(v)}H${W - R}" stroke="${colors.grid}"/><text x="${L - 7}" y="${Y(v) + 3}" text-anchor="end" fill="${colors.text}" font-size="10">${app.tick(v, lo, hi)}</text><text x="${L + (W - L - R) * i / 4}" y="${H - 25}" text-anchor="middle" fill="${colors.text}" font-size="10">${app.fmt(log ? 10 ** f : f)}</text>`;
+      svg += `<path d="M${L} ${Y(v)}H${W - R}" stroke="${colors.grid}"/><text x="${L - 7}" y="${Y(v) + 3}" text-anchor="end" fill="${colors.text}" font-size="10">${app.tick(v, lo, hi)}</text>` + (end === start && i !== 2 ? '' : `<text x="${L + (W - L - R) * i / 4}" y="${H - 25}" text-anchor="middle" fill="${colors.text}" font-size="10">${app.fmt(log ? 10 ** f : f)}</text>`);
     }
     let path = '',
       pen = false;

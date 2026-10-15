@@ -471,6 +471,59 @@ async function check(label, fn) {
     for (let i = 0; i <= c.nx; i++) substrate += h * (r.temperature[i] - 300) * (i === 0 || i === c.nx ? dx / 2 : dx) * c.depth;
     close(substrate / r.electricalPower, 1 - Math.tanh(m * L / 2) / (m * L / 2), 1e-2, 'share of the heat through the substrate');
   });
+  await check('3D: a strong Ettingshausen cooler converges; the second-law limit σN²B²T/κ < 1 is enforced', () => {
+    // Current along x in Bz = 1 T pumps heat across y; bottom at 300 K, top insulated. N·B = 200 µV/K with
+    // σ = 1E5 S/m and κ = 1.5 W/(m K): figure of merit 0.8 at 300 K. Plain Picard contracts by only 0.8 per
+    // iteration here and failed from 0.5 A; implicit Ettingshausen flows and Anderson acceleration converge.
+    const flux = () => ({kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0});
+    const cooler = (I, B = 1) => ({...TE.default2D(), description: undefined, mode: 'steady', nx: 16, ny: 16, lx: 4e-3, ly: 1.6e-3, depth: 1e-3, magneticField: B,
+      materials: [{name: 'E', color: '#73d8d0', rho: 7700, Cp: 150, k: 1.5, sigma: 1e5, alpha: 0, beta: 0, alphaSlope: 0, hall: 0, nernst: 2e-4, righiLeduc: 0, magnetoresistance: 0}],
+      materialMap: Array(256).fill(0), thermal: {left: flux(), right: flux(), top: flux(), bottom: {kind: 'temperature', value: {bias: 300, amplitude: 0, phase: 0}, h: 0}},
+      electrical: {kind: 'current', value: {bias: I, amplitude: 0, phase: 0}, sourceSide: 'left', sinkSide: 'right', sourceRange: [0, 1], sinkRange: [0, 1]}});
+    assert.equal(TE.validate2DConfig(cooler(1)).length, 0);
+    for (const [I, top] of [[-1, 263.33], [.5, 320.83], [1, 343.33], [1.5, 367.5]]) { // below the limit: Z_E·T = 0.8·T/300 K < 1
+      const r = TE.run2D(cooler(I));
+      close(r.temperature[16 * 17 + 8], top, 1e-4, `top at ${I} A`);
+      assert(r.diagnostics.iterations < 80 && Math.abs(r.energyResidual) < 1e-9, `${I} A: ${r.diagnostics.iterations} iterations`);
+    }
+    // Above 1 the short-circuit conductivity κ − σN²B²T is negative: rejected before the run, explained after.
+    assert(TE.validate2DConfig(cooler(1, 1.3)).some(i => i.path === 'materials.0.nernst' && /figure of merit/.test(i.message)));
+    assert.throws(() => TE.run2D(cooler(4)), /Ettingshausen figure of merit .* ≥ 1/); // no convergence
+    assert.throws(() => TE.run2D(cooler(2)), /At 393\.3 K, E has an Ettingshausen figure of merit σN²B²T\/κ = 1\.05 ≥ 1/); // converged past the limit
+    // Hall and Seebeck terms enter the exact limit; B = 0 or N = 0 gives no limit.
+    close(TE.ettingshausenMerit(1e-5, 0, 1.5, {nernst: 2e-4}, 300, 1), .8, 1e-12, 'σN²B²T/κ');
+    assert.equal(TE.ettingshausenMerit(1e-5, 2e-4, 1.5, {nernst: 2e-4}, 300, 0), 0);
+    close(TE.ettingshausenMerit(1e-5, 0, 1.5, {nernst: 2e-4, hall: 1e-4}, 300, 1), .8, 1e-12, 'Hall drops out');
+  });
+  await check('Review items: electrical errors in a field, map check, electrode bars, closed report plots, one-point Bode, decades', async () => {
+    // A failed banded solve in a field explains itself like the solve without field.
+    const hall = {...model(), magneticField: 1}; hall.materials = [{...hall.materials[0], hall: 1e-4}];
+    const solver = TE.from2DConfig(hall), T = solver.initial(), cellSystem = TE.cellSystem;
+    TE.cellSystem = () => { throw new Error('Singular linear system: check that the domain is anchored.'); };
+    try { assert.throws(() => solver.electric(T, solver.properties(T).p, 0), /^Error: Electrical solve failed .*Move the electrode onto a conductor/); }
+    finally { TE.cellSystem = cellSystem; }
+    // An invalid Nx or Ny is reported once, without a second error about the material map.
+    for (const [nx, ny] of [[1, 1], [2, 0], [50, 50]]) {
+      const paths = TE.validate2DConfig({...model(), nx, ny}).map(i => i.path);
+      assert(paths.some(p => p === 'nx' || p === 'ny') && !paths.includes('materialMap'), `${nx} × ${ny}: ${paths}`);
+    }
+    assert(TE.validate2DConfig({...model(), materialMap: [0, 0, 0]}).some(i => i.path === 'materialMap')); // a valid mesh still checks it
+    // Drawn electrode bars cover exactly the solver's electrode nodes, also for ranges a hair off a node.
+    for (const [count, range] of [[10, [.3 + 5e-12, 1]], [10, [.3 + 5e-13, .7 - 5e-13]], [7, [0, 1]], [64, [.45, .55]]]) {
+      const c = {...model(), nx: count, ny: 2, materialMap: Array(2 * count).fill(0)}, mesh = TE.from2DConfig({...c, electrical: {...c.electrical, sourceSide: 'bottom', sourceRange: range, sinkSide: 'top', sinkRange: [0, 1]}}).mesh;
+      const nodes = mesh.electrode('bottom', range), [a, b] = TE.electrodeExtent(count, range);
+      assert.deepEqual([a, b], [Math.min(...nodes) / count, Math.max(...nodes) / count], JSON.stringify(range));
+    }
+    assert.equal(TE.electrodeExtent(10, [.31, .39]), null);
+    // Report plots of a converged cycle are closed at t = 1/f (0.5 s at 2 Hz), as on the page.
+    const voltage = TE.resultReport(ac).figures.find(f => f.name === 'figures/terminal-voltage.svg').data;
+    assert(voltage.includes('>0.5</text>') && !voltage.includes('0.492188'), 'closed cycle');
+    // A Bode plot with one point shows one frequency tick, mid-axis.
+    const one = app.bodeSvg([{frequency: 3, magnitude: 1, phase: 0, unit: 'V'}], 'magnitude', {colors: {text: '#000', grid: '#ccc', line: '#00f', point: '#00f', background: '#fff'}});
+    assert.equal((one.match(/>3<\/text>/g) || []).length, 1);
+    // Rounding to a power of ten keeps its decade.
+    assert.deepEqual([app.fixed(9.99999e-6, 1e-10), app.fixed(-9.9999996e-4, 1e-10), app.fixed(99999.6, 1)], ['1.00000E-5', '-0.0010000000', '1.00000E5']);
+  });
   await check('3D: the Hall bar example loads, validates and shows R_H·I·B/t', async () => {
     const {context, app: a, el: e} = appContext({preset: 'layers'});
     e('preset').value = 'hall'; await a.loadPreset();
@@ -666,7 +719,7 @@ async function check(label, fn) {
     vm.runInNewContext(fs.readFileSync(path.join(root, 'assets', 'startup.js'), 'utf8'), page);
     handlers.error({target: {tagName: 'SCRIPT', src: 'lib/catalog.js', hasAttribute: name => name === 'data-optional'}}); assert.equal(box.hidden, true);
     handlers.error({target: {tagName: 'SCRIPT', src: 'assets/core.js', hasAttribute: () => false}}); assert(!box.hidden && box.textContent.includes('assets/core.js'));
-    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js?v=3.3" data-optional>'));
+    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js?v=3.5" data-optional>'));
   });
   await check('The 3ω example uses 256 steps per period', async () => {
     const {app: a, el: e} = appContext({preset: 'layers'}); e('preset').value = 'nonlinear'; await a.loadPreset();

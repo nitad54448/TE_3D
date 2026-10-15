@@ -170,6 +170,8 @@
   app.$('preset').onchange = app.loadPreset;
   document.querySelectorAll('.settings').forEach(e => {
     e.addEventListener('input', event => {
+      // The colour bar of a material card follows its colour picker at once.
+      if (event.target.type === 'color') event.target.closest('.material-card')?.style.setProperty('--material-color', TE.materialColor(event.target.value));
       if (event.target.type === 'number') {
         for (const key of ['rawNumber', 'displayNumber', 'siNumber', 'siDisplay']) delete event.target.dataset[key];
       }

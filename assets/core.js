@@ -82,6 +82,18 @@
         }
       }
       TE.ThermoelectricMaterial = ThermoelectricMaterial;
+      // Boundary nodes of an electrode: position u along the side (0…1) within its range. The solver, the
+      // maps and the report figures all use this test, so a drawn contact bar matches the solver's nodes.
+      TE.onElectrode = (u, range) => u >= range[0] - 1e-12 && u <= range[1] + 1e-12;
+      // First and last covered node positions on a side of `count` cells, or null when no node is covered.
+      TE.electrodeExtent = (count, range) => {
+        let first = null, last = null;
+        for (let i = 0; i <= count; i++) if (TE.onElectrode(i / count, range)) {
+          if (first === null) first = i / count;
+          last = i / count;
+        }
+        return first === null ? null : [first, last];
+      };
     })(globalThis.TE = globalThis.TE || {});
 
     /* Conservative application operating envelope, not material certification. */
@@ -303,7 +315,7 @@
         }
         electrode(side, range = [0, 1]) {
           TE.assert(this.sides[side] && range.length === 2 && range.every(Number.isFinite) && range[0] >= 0 && range[1] <= 1 && range[1] > range[0], 'Invalid electrode side/range.');
-          const nodes = this.sides[side].filter(f => f.u >= range[0] - 1e-12 && f.u <= range[1] + 1e-12).map(f => f.node);
+          const nodes = this.sides[side].filter(f => TE.onElectrode(f.u, range)).map(f => f.node);
           TE.assert(nodes.length >= 2, 'Each electrode needs at least two boundary nodes. Refine the grid or increase coverage.');
           return nodes;
         }
@@ -628,6 +640,22 @@
         }
         return out;
       }
+      // The one explanation of a failed electrical solve, with or without magnetic field.
+      TE.electricalSolveError = error => new Error(`Electrical solve failed (${error.message}) Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E14), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.`);
+      // Second-law limit of the magnetic model. With the in-plane tensors written as complex numbers
+      // (R ↔ i): σ̂ = 1/(ρ′ + i·R_H·B), ε = α + i·N·B, Peltier tensor T·ε (Onsager), w = σ̂·ε. Entropy
+      // production stays nonnegative only if κ ≥ T·[(Re w)²/Re σ̂ − Re(w·ε)]. Returns that ratio, the
+      // Ettingshausen figure of merit: σ′N²B²T/κ without Hall and Seebeck terms, 0 at B = 0. At 1 or more
+      // the short-circuit thermal conductivity is negative: heat would diffuse up the gradient.
+      TE.ettingshausenMerit = (rhoE, alpha, kappa, m, T, B) => {
+        if (!B || !m.nernst) return 0;
+        const rho = rhoE * (1 + (m.magnetoresistance ?? 0) * B * B), h = (m.hall ?? 0) * B, n = m.nernst * B,
+          d = rho * rho + h * h, sr = rho / d, si = -h / d, // σ̂
+          wr = sr * alpha - si * n, wi = sr * n + si * alpha, // w = σ̂·ε
+          wer = wr * alpha - wi * n; // Re(w·ε)
+        return T * (wr * wr / sr - wer) / kappa;
+      };
+      TE.ettingshausenMessage = merit => `At ${merit.T.toPrecision(4)} K, ${merit.name} has an Ettingshausen figure of merit σN²B²T/κ = ${merit.value.toPrecision(3)} ≥ 1: its thermal conductivity at zero electric field is negative, so the state violates the second law and is not physical. Reduce N, Bz or the heating.`;
       class Solver2D {
         constructor(mesh, materials, boundaries, electrical, {
           magneticField = 0
@@ -772,7 +800,7 @@
                 initial
               } : undefined);
             } catch (error) {
-              throw new Error(`Electrical solve failed (${error.message}) Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E14), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.`);
+              throw TE.electricalSolveError(error);
             }
           };
           const base = solve(rhs, this.lastBase);
@@ -846,7 +874,13 @@
             const fixed = new Map();
             this.source.forEach(i => fixed.set(i, 0));
             this.sink.forEach(i => fixed.set(i, 0));
-            cache = this.electricCache = {rho: p.map(v => v.rho), W, l, tr, solve: TE.cellSystem(m, K, zero, fixed)};
+            let solve;
+            try {
+              solve = TE.cellSystem(m, K, zero, fixed);
+            } catch (error) {
+              throw TE.electricalSolveError(error);
+            }
+            cache = this.electricCache = {rho: p.map(v => v.rho), W, l, tr, solve};
           }
           const {W, l: lw, tr: tw} = cache;
           for (let c = 0; c < nc; c++) {
@@ -878,9 +912,17 @@
           const fixed = new Map();
           this.source.forEach(i => fixed.set(i, 0));
           this.sink.forEach(i => fixed.set(i, 0));
-          const base = cache.solve(src.map(v => -v), fixed);
+          // Same diagnosis as the solve without field (electric): a singular or nonfinite banded solve.
+          const guarded = rhs => {
+            try {
+              return cache.solve(rhs, fixed);
+            } catch (error) {
+              throw TE.electricalSolveError(error);
+            }
+          };
+          const base = guarded(src.map(v => -v));
           this.source.forEach(i => fixed.set(i, 1));
-          const unit = cache.solve(zero, fixed),
+          const unit = guarded(zero),
             Ibase = cellFlows(G, W, base, flow0),
             Ihom = cellFlows(G, W, unit);
           let Iunit = 0,
@@ -929,16 +971,22 @@
           }
           return W;
         }
-        // Thermal linear solve: conjugate gradients for the symmetric 2D operator, banded LU with Righi–Leduc.
-        thermalSolve(p, diag, rhs, fixed, initial, rtol) {
+        // Thermal linear solve: conjugate gradients for the symmetric 2D operator; banded LU for the
+        // non-symmetric ones, with Righi–Leduc conduction or the implicit Ettingshausen matrix `extra`.
+        thermalSolve(p, diag, rhs, fixed, initial, rtol, extra = null) {
           const m = this.mesh;
-          if (!this.righiLeducActive) return TE.graphSolve(m, p.map(v => v.k), diag, rhs, fixed, {
+          if (!this.righiLeducActive && !extra) return TE.graphSolve(m, p.map(v => v.k), diag, rhs, fixed, {
             initial,
             rtol
           });
-          const W = this.thermalWeights(p),
-            K = new Float64Array(16 * m.cells.length);
-          for (let c = 0; c < m.cells.length; c++) addCellMatrix(W, this.cellGeometry.L, c, K);
+          const K = extra ? Float64Array.from(extra) : new Float64Array(16 * m.cells.length);
+          if (this.righiLeducActive) {
+            const W = this.thermalWeights(p);
+            for (let c = 0; c < m.cells.length; c++) addCellMatrix(W, this.cellGeometry.L, c, K);
+          } else m.cells.forEach((cell, c) => cell.links.forEach((k, i) => {
+            const g = p[k].k, [a, b] = LINK_NODES[i], o = 16 * c;
+            K[o + 5 * a] += g; K[o + 4 * a + b] -= g; K[o + 4 * b + a] -= g; K[o + 5 * b] += g;
+          }));
           return TE.cellSystem(m, K, diag, fixed)(rhs, fixed);
         }
         balance(T, t) {
@@ -968,7 +1016,8 @@
             q.push(pel - p[k].k * (T[l.b] - T[l.a]));
             work.push(P);
           });
-          if (this.nernstActive || this.righiLeducActive) this.magneticHeat(T, p, elect.I, source, q);
+          const ettingshausen = this.nernstActive ? new Float64Array(16 * m.cells.length) : null;
+          if (this.nernstActive || this.righiLeducActive) this.magneticHeat(T, p, elect.I, source, q, ettingshausen);
           TE.assert([...source, ...q, ...work].every(Number.isFinite), 'Heat balance exceeds the finite numerical range.');
           return {
             p,
@@ -976,6 +1025,7 @@
             ...elect,
             source,
             peltier,
+            ettingshausen,
             q,
             work
           };
@@ -983,13 +1033,15 @@
         // Ettingshausen transport q = T·N·B·(ẑ × J), from the Peltier tensor Π = T·ε̂ (Onsager), and the
         // Righi–Leduc part of conduction in the link heat flows q. Heat moves along links from node to node,
         // so the global energy balance stays exact; the Ettingshausen part enters the node sources.
-        magneticHeat(T, p, I, source, q) {
+        // jacobian (optional, 16 per cell): the outflow of each cell node per kelvin at each cell node due to the
+        // Ettingshausen flows at fixed current, T_mid·s with s = ∓A·N·B·J̄. Picard treats it implicitly.
+        magneticHeat(T, p, I, source, q, jacobian = null) {
           const m = this.mesh;
           if (this.righiLeducActive) {
             const flows = this.conductionFlows(T, p);
             m.links.forEach((e, k) => q[k] += flows[k] + p[k].k * (T[e.b] - T[e.a]));
           }
-          if (this.nernstActive) m.cells.forEach(cell => {
+          if (this.nernstActive) m.cells.forEach((cell, c) => {
             const NB = this.materials[cell.m].nernst * this.B;
             if (NB === 0) return;
             const [k0, k1, k2, k3] = cell.links,
@@ -998,11 +1050,17 @@
             cell.links.forEach((k, i) => {
               const e = m.links[k],
                 Tm = (T[e.a] + T[e.b]) / 2,
-                ett = i < 2 ? -e.A * Tm * NB * Jy : e.A * Tm * NB * Jx;
+                s = i < 2 ? -e.A * NB * Jy : e.A * NB * Jx,
+                ett = s * Tm;
               TE.checkRange(ett, 'power');
               source[e.a] -= ett;
               source[e.b] += ett;
               q[k] += ett;
+              if (jacobian) {
+                const [a, b] = LINK_NODES[i], o = 16 * c, h = s / 2;
+                jacobian[o + 4 * a + a] += h; jacobian[o + 4 * a + b] += h;
+                jacobian[o + 4 * b + a] -= h; jacobian[o + 4 * b + b] -= h;
+              }
             });
           });
         }
@@ -1085,15 +1143,27 @@
             linearRtol = 2e-12,
             lastResidual = null;
           for (const [i, v] of bc.fixed) T[i] = v;
+          // With a Nernst coefficient, the Nernst field redistributes the current and the current the
+          // Ettingshausen heat: one slow Picard mode, which contracts only by about the Ettingshausen
+          // figure of merit N²B²σT/κ per iteration (0.8 for a Bi2Te3-like strength). Anderson acceleration
+          // over the last iterates removes it. Without Nernst the iteration is unchanged.
+          const history = this.nernstActive ? [] : null;
           for (let iteration = 0; iteration < maxIterations; iteration++) {
             // Semi-implicit Peltier: a node source −T·c with c > 0 (Peltier cooling) is moved to the
             // diagonal by adding c·T to both sides. The fixed point, the SPD matrix and the acceptance
             // test are unchanged; a lagged cooling term would make Picard oscillate at high current.
+            // Ettingshausen flows T_mid·s carry heat from node to node like a convection term: their exact
+            // linearization at the current J goes into the matrix (banded LU), and K·T into the right-hand
+            // side, so the fixed point is again unchanged. Lagged, they stall Picard or make it diverge.
             const b = this.balance(T, t),
               implicitPeltier = b.peltier.map(v => v > 0 ? v : 0),
               diag = bc.diag.map((v, i) => v + implicitPeltier[i] + (gammaDt ? b.cap[i] / gammaDt : 0)),
               rhs = b.source.map((v, i) => v + implicitPeltier[i] * T[i] + bc.rhs[i] + (gammaDt ? b.cap[i] / gammaDt * target[i] : 0));
-            const candidate = this.thermalSolve(b.p, diag, rhs, bc.fixed, T, linearRtol);
+            if (b.ettingshausen) m.cells.forEach((cell, c) => {
+              const o = 16 * c;
+              for (let r = 0; r < 4; r++) for (let col = 0; col < 4; col++) rhs[cell.nodes[r]] += b.ettingshausen[o + 4 * r + col] * T[cell.nodes[col]];
+            });
+            const candidate = this.thermalSolve(b.p, diag, rhs, bc.fixed, T, linearRtol, b.ettingshausen);
             const previousError = error;
             error = Math.max(...candidate.map((v, i) => Math.abs(v - T[i])));
             stalls = error > tolerance && error >= previousError ? stalls + 1 : 0;
@@ -1108,16 +1178,79 @@
                 heatResidualWatts: residual.watts,
                 heatResidualNormalized: residual.normalized
               };
-              if (residual.normalized <= 1) return candidate;
+              if (residual.normalized <= 1) {
+                // Converged, but a state past the second-law limit is not physical: reject it like any
+                // result outside the operating range.
+                const merit = this.nernstActive ? this.maxEttingshausenMerit(candidate) : null;
+                if (merit && merit.value >= 1) throw new Error(TE.ettingshausenMessage(merit));
+                return candidate;
+              }
               // The update has converged but the heat balance has not. With small time steps the CG
               // tolerance, relative to capacity × absolute temperature, is looser than the balance
               // test, and the warm-started solve would return the same state. Tighten it.
               lastResidual = residual.normalized;
               linearRtol = Math.max(linearRtol / 100, 1e-16);
             }
-            T = candidate.map((v, i) => bc.fixed.has(i) ? v : T[i] + relaxation * (v - T[i]));
+            const step = candidate.map((v, i) => bc.fixed.has(i) ? v : T[i] + relaxation * (v - T[i]));
+            T = history ? this.anderson(history, T, candidate, step, relaxation, bc.fixed) : step;
           }
-          throw new Error(`Nonlinear thermal iteration failed (update ${error.toExponential(2)} K${lastResidual === null ? '' : `, heat-balance residual ${lastResidual.toExponential(2)}`}). ${gammaDt ? 'Reduce the excitation or use more time steps per period.' : 'Reduce the excitation or check the material laws.'}`);
+          const merit = this.nernstActive ? this.maxEttingshausenMerit(T) : null;
+          throw new Error(`Nonlinear thermal iteration failed (update ${error.toExponential(2)} K${lastResidual === null ? '' : `, heat-balance residual ${lastResidual.toExponential(2)}`}). ` +
+            (merit && merit.value >= 1 ? TE.ettingshausenMessage(merit) + ' ' : '') +
+            (gammaDt ? 'Reduce the excitation or use more time steps per period.' : 'Reduce the excitation or check the material laws.'));
+        }
+        // Largest Ettingshausen figure of merit over the nodes (see TE.ettingshausenMerit), for error messages.
+        maxEttingshausenMerit(T) {
+          let best = {value: 0, T: 0, name: ''};
+          this.mesh.cells.forEach(cell => {
+            const a = this.materials[cell.m];
+            for (const i of cell.nodes) {
+              const value = TE.ettingshausenMerit(a.electricalResistivity(T[i]), a.seebeck(T[i]), a.thermalConductivity(T[i]), a, T[i], this.B);
+              if (value > best.value) best = {value, T: T[i], name: a.name};
+            }
+          });
+          return best;
+        }
+        // Anderson acceleration (depth 3) of the fixed-point map T → candidate. With f = candidate − T and
+        // the differences ΔT, Δf of successive iterates, γ minimizes |f − Δf·γ| and the next iterate is
+        // T + β·f − (ΔT + β·Δf)·γ (β = relaxation). An accelerated iterate that is not finite or leaves the
+        // operating range is replaced by the plain step. Acceptance tests are unchanged.
+        anderson(history, T, candidate, step, beta, fixed) {
+          const f = candidate.map((v, i) => fixed.has(i) ? 0 : v - T[i]);
+          history.push({T, f});
+          if (history.length > 4) history.shift();
+          const m = history.length - 1;
+          if (m < 1) return step;
+          const dT = [], dF = [];
+          for (let j = 0; j < m; j++) {
+            dT.push(history[j + 1].T.map((v, i) => v - history[j].T[i]));
+            dF.push(history[j + 1].f.map((v, i) => v - history[j].f[i]));
+          }
+          // Normal equations (m ≤ 3), with a relative Tikhonov term against nearly parallel differences.
+          const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0),
+            A = dF.map(a => dF.map(b => dot(a, b))),
+            rhs = dF.map(a => dot(a, f)),
+            trace = A.reduce((sum, row, i) => sum + row[i], 0);
+          if (!(trace > 0)) return step;
+          A.forEach((row, i) => row[i] += 1e-10 * trace);
+          for (let k = 0; k < m; k++) for (let r = k + 1; r < m; r++) {
+            const q = A[r][k] / A[k][k];
+            for (let c = k; c < m; c++) A[r][c] -= q * A[k][c];
+            rhs[r] -= q * rhs[k];
+          }
+          const gamma = Array(m).fill(0);
+          for (let k = m - 1; k >= 0; k--) {
+            let v = rhs[k];
+            for (let c = k + 1; c < m; c++) v -= A[k][c] * gamma[c];
+            gamma[k] = v / A[k][k];
+          }
+          const next = T.map((v, i) => {
+            if (fixed.has(i)) return step[i];
+            let x = v + beta * f[i];
+            for (let j = 0; j < m; j++) x -= gamma[j] * (dT[j][i] + beta * dF[j][i]);
+            return x;
+          });
+          return next.every(v => Number.isFinite(v) && v >= 1 && v <= 2000) ? next : step;
         }
         snapshot(T, t = 0, steady = false) {
           const m = this.mesh,
@@ -1598,8 +1731,25 @@
               break;
             }
           }
+          // Second law in the field: the Ettingshausen figure of merit must stay below 1 (TE.ettingshausenMerit).
+          if (typeof m.nernst === 'number' && m.nernst !== 0 && Number.isFinite(field) && field !== 0 && !errors.some(e => e.path.startsWith(p + '.'))) for (const T of probeTemperatures) {
+            const sigma = typeof m.sigma === 'number' ? {type: 'inverseLinear', value: m.sigma, slope: m.beta ?? 0, reference: 300} : m.sigma,
+              alpha = typeof m.alpha === 'number' ? {type: 'linear', value: m.alpha, slope: m.alphaSlope ?? 0, reference: 300} : m.alpha;
+            let merit;
+            try {
+              merit = TE.ettingshausenMerit(1 / TE.law(sigma, T), TE.law(alpha, T), TE.law(m.k, T), m, T, field);
+            } catch {
+              continue;
+            }
+            if (!(merit < 1)) {
+              add(p + '.nernst', `With Bz = ${field} T, the Ettingshausen figure of merit σN²B²T/κ is ${merit.toPrecision(3)} at ${T.toPrecision(4)} K: it must stay below 1, or the short-circuit thermal conductivity is negative and no stable state exists (second law). Reduce N or Bz.`);
+              break;
+            }
+          }
         });
-        if (!Array.isArray(c.materialMap) || !nxOK || !nyOK || c.materialMap.length !== c.nx * c.ny) add('materialMap', 'Material map must have exactly Nx × Ny cells.');else if (!Array.isArray(mats) || c.materialMap.some(id => !Number.isInteger(id) || id < 0 || id >= mats.length)) add('materialMap', 'Every cell must reference an existing material.');
+        // With an invalid Nx or Ny (already reported), the map cannot be checked against them: no second error.
+        const meshOK = nxOK && nyOK && (c.nx + 1) * (c.ny + 1) <= 1600;
+        if (!Array.isArray(c.materialMap)) add('materialMap', 'Material map must have exactly Nx × Ny cells.');else if (!meshOK) {} else if (c.materialMap.length !== c.nx * c.ny) add('materialMap', 'Material map must have exactly Nx × Ny cells.');else if (!Array.isArray(mats) || c.materialMap.some(id => !Number.isInteger(id) || id < 0 || id >= mats.length)) add('materialMap', 'Every cell must reference an existing material.');
         const e = c.electrical,
           contacts = {};
         if (!object(e)) add('electrical', 'Define the electrical contacts and control mode.');else {
@@ -1616,7 +1766,7 @@
             if (sideOK && rangeOK && nxOK && nyOK && (c.nx + 1) * (c.ny + 1) <= 1600) {
               const count = ['left', 'right'].includes(side) ? c.ny : c.nx,
                 ids = [];
-              for (let k = 0; k <= count; k++) if (k / count >= range[0] - 1e-12 && k / count <= range[1] + 1e-12) ids.push(side === 'left' ? k * (c.nx + 1) : side === 'right' ? k * (c.nx + 1) + c.nx : side === 'bottom' ? k : c.ny * (c.nx + 1) + k);
+              for (let k = 0; k <= count; k++) if (TE.onElectrode(k / count, range)) ids.push(side === 'left' ? k * (c.nx + 1) : side === 'right' ? k * (c.nx + 1) + c.nx : side === 'bottom' ? k : c.ny * (c.nx + 1) + k);
               contacts[name] = ids;
               if (ids.length < 2) add(p, 'Electrode must cover at least two boundary nodes. Enlarge its range or refine the mesh.');
             }

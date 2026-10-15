@@ -196,7 +196,8 @@
     app.$('singleFrequencyLabel').hidden = sweep;
     app.$('frequency').disabled = sweep || mode === 'steady';
     for (const id of ['sweepMin', 'sweepMax', 'sweepPoints', 'sweepSpacing']) app.$(id).disabled = !sweep;
-    if (sweep) app.$('solverMethod').textContent = 'Periodic · frequency sweep';
+    // A sweep needs an AC excitation; without one, say so instead of naming a periodic method whose settings are hidden.
+    if (sweep) app.$('solverMethod').textContent = mode === 'steady' ? 'Frequency sweep · needs a nonzero AC peak' : 'Periodic · frequency sweep';
   };
   app.paintAt = function paintAt(e) {
     if (app.worker || app.importingProject || !app.geomFrame) return;

@@ -60,7 +60,9 @@ globalThis.TEApp = {};
   // values shown together end on the same digit: 229.61–300.13 K, not 229.6061283–300.1273 K.
   app.fixed = (v, res) => {
     if (!Number.isFinite(v)) return String(v);
-    const e = Math.floor(Math.log10(res)), step = 10 ** e, r = Math.round(v / step) * step;
+    // n / 10^−e, not n · 10^e: dividing by an exact power of ten rounds correctly, so a value that rounds to a
+    // power of ten is that power exactly and keeps its decade in the digit count below.
+    const e = Math.floor(Math.log10(res)), step = 10 ** e, n = Math.round(v / step), r = e < 0 ? n / 10 ** -e : n * step;
     if (Math.abs(r) < step / 2) return '0';
     return plain(r) ? r.toFixed(Math.min(100, Math.max(0, -e))) : eNotation(r, Math.min(100, Math.max(0, Math.floor(Math.log10(Math.abs(r))) - e)));
   };

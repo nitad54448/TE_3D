@@ -61,8 +61,9 @@
       const side = c.electrical[name + 'Side'],
         range = c.electrical[name + 'Range'],
         count = ['left', 'right'].includes(side) ? c.ny : c.nx,
-        start = Math.ceil(range[0] * count - 1e-10) / count,
-        end = Math.floor(range[1] * count + 1e-10) / count;
+        extent = TE.electrodeExtent(count, range); // the solver's nodes
+      if (!extent) continue;
+      const [start, end] = extent;
       ctx.strokeStyle = name === 'source' ? colors.source : colors.sink;
       ctx.beginPath();
       if (side === 'left' || side === 'right') {

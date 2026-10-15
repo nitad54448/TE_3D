@@ -42,8 +42,9 @@
         range = c.electrical[name + 'Range'],
         vertical = ['left', 'right'].includes(side),
         count = vertical ? c.ny : c.nx,
-        a = Math.ceil(range[0] * count - 1e-10) / count,
-        d = Math.floor(range[1] * count + 1e-10) / count;
+        extent = TE.electrodeExtent(count, range); // the solver's nodes
+      if (!extent) continue;
+      const [a, d] = extent;
       const pts = vertical ? [x + (side === 'right' ? w : 0), y + h * (1 - a), x + (side === 'right' ? w : 0), y + h * (1 - d)] : [x + w * a, y + (side === 'bottom' ? h : 0), x + w * d, y + (side === 'bottom' ? h : 0)];
       b += `<line x1="${pts[0]}" y1="${pts[1]}" x2="${pts[2]}" y2="${pts[3]}" stroke="${name === 'source' ? '#111' : '#c23c91'}" stroke-width="3"/>`;
     }
@@ -114,13 +115,18 @@
     if (periodic(r)) {
       terminal += '<p>Terminal current I, entering the source:</p>' + spectrum(terminalData.current, 'A', terminalData.currentFloor);
       terminal += table(['Terminal quantity', 'Value'], [['Impedance Z = U₁/I₁ (Ω)', terminalData.impedance ? polar(terminalData.impedance) : 'Not applicable: no terminal current at 1ω'], ['Mean absorbed power over the saved cycle (W)', terminalData.meanPower]]);
-      terminal += add('temperature-probe', plotSvg(r.time, r.temperature.map(T => T[probe]), 'Probe temperature · K'));
-      terminal += add('terminal-voltage', plotSvg(r.time, r.terminalVoltage, 'Terminal voltage · V'));
-      terminal += add('terminal-current', plotSvg(r.time, r.current, 'Terminal current · A'));
+      // As on the page (TE.historyForPlot): a converged cycle is closed back to t = 1/f; a stopped one is not.
+      const cycle = (values, label) => {
+        const h = TE.historyForPlot(r, values);
+        return plotSvg(h.time.map(t => t / 1000), h.values, label);
+      };
+      terminal += add('temperature-probe', cycle(r.temperature.map(T => T[probe]), 'Probe temperature · K'));
+      terminal += add('terminal-voltage', cycle(r.terminalVoltage, 'Terminal voltage · V'));
+      terminal += add('terminal-current', cycle(r.current, 'Terminal current · A'));
       if (hallInfo.active) {
         terminal += `<p>Hall voltage V(P+) − V(P−) in Bz = ${esc(fmt(c.magneticField ?? 0))} T:</p>` + table(['Order', 'Hz', 'Magnitude V', 'Phase °', 'Real V', 'Imag V'], hall.harmonics.map((z, n) => [n, n * r.frequency, mag(z), mag(z) > 1e-16 ? phase(z) : null, z.re, z.im]));
         terminal += table(['Hall quantity', 'Value'], [['Hall resistance R_xy = V_H₁/I₁ (Ω)', hallInfo.resistance ? polar(hallInfo.resistance) : 'Not applicable: no terminal current at 1ω']]);
-        terminal += add('hall-voltage', plotSvg(r.time, hall.history, 'Hall voltage V(P+) − V(P−) · V'));
+        terminal += add('hall-voltage', cycle(hall.history, 'Hall voltage V(P+) − V(P−) · V'));
       } else terminal += `<p>Hall voltage: not applicable. ${esc(hallInfo.reason)}</p>`;
     } else terminal += table(['Steady quantity', 'Value'], [['Probe temperature (K)', r.temperature[probe]], ['Terminal voltage (V)', r.terminalVoltage], ['Terminal current (A)', r.current], ['Electrical power absorbed (W)', r.electricalPower], ['Magnetic field Bz (T)', c.magneticField ?? 0],
       ['Hall voltage V(P+) − V(P−) (V)', hallInfo.active ? hall.value : 'Not applicable: ' + hallInfo.reason],
