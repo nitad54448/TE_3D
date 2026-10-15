@@ -1687,12 +1687,21 @@
     (function (TE) {
       // Model file format version, checked when models and projects are imported (3D format).
       TE.modelVersion = 3;
+      // Startup example ("Cu / BiTe / Cu · thermoelectric leg"): a p-type BiTe leg between two copper
+      // contacts, run as a Peltier cooler. The other examples derived from it set what they change.
       TE.default2D = () => ({
         version: TE.modelVersion,
-        mode: 'periodic',
-        nx: 12,
+        description: 'Thermoelectric leg Cu / BiTe / Cu: a 2 mm p-type BiTe leg between two 0.5 mm copper contacts (1 mm × 1 mm cross-section), driven by 2 A DC from left to right. ' +
+          'Positive current enters the BiTe at the left junction, where the Seebeck coefficient rises: Peltier heat αT·I is absorbed there (cold junction) and released at the right junction (hot junction), ' +
+          'from where it leaves through the right contact, held at 300 K. The left contact is insulated (no heat load), so the cold side falls to its no-load limit, about 230 K: ' +
+          'with constant properties, α·Tc·I = I²R/2 + (300 K − Tc)/R_th, R = L/(σA) = 20 mΩ and R_th = L/(kA) = 1333 K/W. ' +
+          'Try: current arrows on the Results map; the temperature profile (nearly uniform in each copper contact, curved in BiTe by Joule heat); more current (cooling improves up to about α·Tc/R ≈ 2.4 A, then Joule heat wins); ' +
+          'a heat load on the cold side as a negative left flux (positive = outward); −1 A (the junctions swap and the insulated left side heats, to about 444 K: beyond about −1.7 A no steady state exists, because the Peltier heat αT·I grows with T); ' +
+          'open circuit with the left side at 350 K (Seebeck generator); an AC current with zero DC bias: the 1ω Peltier heat has opposite signs at the two junctions (compare the 1ω phase map), while Joule heat appears at DC and 2ω.',
+        mode: 'steady',
+        nx: 24,
         ny: 8,
-        lx: .002,
+        lx: .003,
         ly: .001,
         depth: .001,
         frequency: 2,
@@ -1724,48 +1733,53 @@
           alphaSlope: 2e-7,
           color: '#73d8d0'
         }],
+        // 0.5 mm copper | 2 mm BiTe | 0.5 mm copper, cells of 0.125 mm.
         materialMap: Array.from({
-          length: 96
-        }, (_, i) => i % 12 < 6 ? 0 : 1),
+          length: 24 * 8
+        }, (_, i) => i % 24 < 4 || i % 24 >= 20 ? 0 : 1),
         thermal: {
           left: {
+            kind: 'flux',
+            value: {
+              bias: 0,
+              amplitude: 0,
+              phase: 0
+            },
+            h: 0
+          },
+          right: {
             kind: 'temperature',
             value: {
               bias: 300,
-              amplitude: 0
+              amplitude: 0,
+              phase: 0
             },
-            h: 10000
-          },
-          right: {
-            kind: 'convection',
-            value: {
-              bias: 300,
-              amplitude: 0
-            },
-            h: 10000
+            h: 0
           },
           bottom: {
             kind: 'flux',
             value: {
               bias: 0,
-              amplitude: 0
+              amplitude: 0,
+              phase: 0
             },
-            h: 1000
+            h: 0
           },
           top: {
             kind: 'flux',
             value: {
               bias: 0,
-              amplitude: 0
+              amplitude: 0,
+              phase: 0
             },
-            h: 1000
+            h: 0
           }
         },
         electrical: {
           kind: 'current',
           value: {
-            bias: 0,
-            amplitude: .1,
+            bias: 2,
+            amplitude: 0,
             phase: 0
           },
           sourceSide: 'left',

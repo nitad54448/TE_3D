@@ -610,6 +610,36 @@
       sweep: {enabled: true, min: .003, max: 30, points: 13, spacing: 'log'}
     };
   };
+  // Joule heating with contacts: a resistive strip between two copper contact pads held at 300 K, lying
+  // on a 300 K substrate through a thermal contact conductance h (bottom side, convection). Side view of
+  // a film: x along the strip, y across its thickness t = 0.1 mm, depth = width 1 mm; Ny = 1 (1D fin).
+  // h = 0 gives the parabola q·L²/(8k); h > 0 the fin profile θ∞[1 − cosh(x/L_H)/cosh(L/(2L_H))].
+  app.jouleContactsConfig = function jouleContactsConfig() {
+    const pad = 5, strip = 40, nx = strip + 2 * pad,
+      fixed = () => ({kind: 'temperature', value: {bias: 300, amplitude: 0, phase: 0}, h: 0}),
+      base = TE.default2D();
+    return {
+      ...base,
+      description: 'Joule heating with contacts: 0.4 A DC through a 2 mm resistive strip (σ = 10⁵ S/m, k = 2 W/(m K)), 0.1 mm thick and 1 mm wide, between two 0.25 mm copper contacts held at 300 K. ' +
+        'The strip lies on a 300 K substrate through a thermal contact conductance h = 1000 W/(m² K) (bottom side, convection), so the Joule heat q = J²/σ = 1.6·10⁸ W/m³ leaves both through the contacts and through the substrate. ' +
+        'The profile is that of a fin: θ(x) = θ∞[1 − cosh(x/L_H)/cosh(L/(2L_H))], with x from the middle of the strip, the healing length L_H = √(k·t/h) = 0.45 mm and the plateau θ∞ = q·t/h = 16 K. ' +
+        'Expected maximum rise 12.6 K (computed 12.6 K on the bottom face, 12.9 K on the top face); 44 % of the heat leaves through the contacts, 56 % through the substrate. ' +
+        'Try: h = 0 on the bottom (no substrate: the parabola q·L²/(8k) = 40 K); a larger h (shorter L_H: a flat plateau at q·t/h, set by the substrate alone); ' +
+        'convection on the left and right sides (contacts with a finite thermal conductance: the ends rise above 300 K); flux 0 on both ends (thermally floating contacts).',
+      mode: 'steady',
+      nx,
+      ny: 1,
+      lx: nx * 5e-5,
+      ly: 1e-4,
+      depth: 1e-3,
+      materials: [{name: 'Resistive strip', rho: 2000, Cp: 500, k: 2, sigma: 1e5, beta: 0, alpha: 0, alphaSlope: 0, color: '#73d8d0'}, {...base.materials[0]}],
+      materialMap: Array.from({length: nx}, (_, i) => i < pad || i >= nx - pad ? 1 : 0),
+      thermal: {left: fixed(), right: fixed(), top: {kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0},
+        bottom: {kind: 'convection', value: {bias: 300, amplitude: 0, phase: 0}, h: 1000}},
+      electrical: {kind: 'current', value: {bias: .4, amplitude: 0, phase: 0}, sourceSide: 'left', sinkSide: 'right', sourceRange: [0, 1], sinkRange: [0, 1]},
+      sweep: {enabled: false}
+    };
+  };
   // Hall measurement on p-type Ge (the settings of a saved project): 1 mA DC between narrow contacts at
   // the middle of the top and bottom edges of a 4 mm × 10 mm plate, 0.175 mm thick, in Bz = 1 T; Hall
   // probes at mid-height on the side edges, which are held at 300 K (isothermal Hall voltage).
@@ -649,7 +679,7 @@
   app.loadPreset = async () => {
     const token = ++app.presetToken,
       p = app.$('preset').value,
-      build = {module: app.moduleConfig, rc: app.rcConfig, 'hall-pge': app.hallPGeConfig}[p];
+      build = {dc: app.jouleContactsConfig, module: app.moduleConfig, rc: app.rcConfig, 'hall-pge': app.hallPGeConfig}[p];
     if (build) {
       try {
         const config = await build();
@@ -676,22 +706,24 @@
       }
       return;
     }
-    app.config = TE.default2D();
+    // The other examples start from TE.default2D(), the Cu / BiTe / Cu leg of 'layers', and set
+    // explicitly everything they change: mode, geometry, materials, thermal sides and drive.
+    const c = TE.default2D(),
+      fixed = T => ({kind: 'temperature', value: {bias: T, amplitude: 0, phase: 0}, h: 0}),
+      flux = () => ({kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0});
+    if (p !== 'layers') delete c.description;
+    app.config = c;
     app.selected = 0;
     if (p === 'spreading') {
-      app.config.mode = 'steady';
-      app.config.electrical.value = {
-        bias: .1,
-        amplitude: 0
-      };
-      app.config.electrical.sourceRange = [.25, .75];
+      // Copper and BiTe halves on 12 × 8 cells; 0.1 A DC enters through the middle half of the left edge.
+      Object.assign(c, {mode: 'steady', nx: 12, ny: 8, lx: .002, ly: .001, materialMap: Array.from({length: 96}, (_, i) => i % 12 < 6 ? 0 : 1)});
+      c.thermal = {left: fixed(300), right: {kind: 'convection', value: {bias: 300, amplitude: 0, phase: 0}, h: 10000}, bottom: flux(), top: flux()};
+      c.electrical.value = {bias: .1, amplitude: 0, phase: 0};
+      c.electrical.sourceRange = [.25, .75];
     }
-    if (['dc', 'joule', 'nonlinear', 'seebeck'].includes(p)) {
-      app.config.nx = 12;
-      app.config.ny = 6;
-      app.config.lx = .001;
-      app.config.ly = .001;
-      app.config.materials = [{
+    if (['joule', 'nonlinear', 'seebeck'].includes(p)) {
+      Object.assign(c, {mode: p === 'seebeck' ? 'steady' : 'periodic', nx: 12, ny: 6, lx: .001, ly: .001});
+      c.materials = [{
         name: p === 'seebeck' ? 'Thermoelectric material' : 'Resistive material',
         rho: 2000,
         Cp: 500,
@@ -702,26 +734,15 @@
         alphaSlope: 0,
         color: '#73d8d0'
       }];
-      app.config.materialMap = Array(app.config.nx * app.config.ny).fill(0);
-      app.config.thermal.right = {
-        kind: 'temperature',
-        value: {
-          bias: p === 'seebeck' ? 350 : 300,
-          amplitude: 0
-        },
-        h: 0
-      };
-      app.config.electrical.value.amplitude = p === 'nonlinear' ? .2 : 1;
-      if (p === 'seebeck') {
-        app.config.mode = 'steady';
-        app.config.electrical.kind = 'open_circuit';
-      }
+      c.materialMap = Array(c.nx * c.ny).fill(0);
+      c.thermal = {left: fixed(300), right: fixed(p === 'seebeck' ? 350 : 300), bottom: flux(), top: flux()};
+      c.electrical.value = {bias: 0, amplitude: p === 'nonlinear' ? .2 : p === 'seebeck' ? 0 : 1, phase: 0};
+      if (p === 'seebeck') c.electrical.kind = 'open_circuit';
     }
     // BDF2 shifts harmonic n by about (2πn/N)²/3: 0.7 % at 3ω with 128 steps, 0.2 % with 256.
-    if (p === 'nonlinear') app.config.samples = 256;
+    if (p === 'nonlinear') c.samples = 256;
     if (p === 'hall') {
-      const flux = () => ({kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0});
-      Object.assign(app.config, {
+      Object.assign(c, {
         description: 'Hall bar: 1 mA DC along an 8 mm × 1 mm bar of n-type semiconductor, 0.5 mm thick (depth), in Bz = 1 T out of the screen. ' +
           'Electrons (R_H = −6.24·10⁻⁴ m³/C, n = 10²² m⁻³, mobility 0.1 m²/Vs) are pushed toward the bottom edge, so the Hall voltage between the probes at mid-length is ' +
           'V_H = V(P+) − V(P−) = R_H·I·B/t = −1.248 mV. Try: reverse the field or the current (V_H changes sign); shorten the bar (the current contacts short the Hall voltage); ' +
@@ -730,20 +751,10 @@
         mode: 'steady', nx: 64, ny: 8, lx: .008, ly: .001, depth: .0005, magneticField: 1,
         hallProbes: {plus: {x: .5, y: 0}, minus: {x: .5, y: 1}}
       });
-      app.config.materials = [{name: 'n-type semiconductor (illustrative)', rho: 2330, Cp: 700, k: 150, sigma: 160, beta: 0, alpha: 0, alphaSlope: 0, hall: -6.24e-4, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#73d8d0'}];
-      app.config.materialMap = Array(64 * 8).fill(0);
-      app.config.thermal = {left: {kind: 'temperature', value: {bias: 300, amplitude: 0, phase: 0}, h: 0}, right: {kind: 'temperature', value: {bias: 300, amplitude: 0, phase: 0}, h: 0}, top: flux(), bottom: flux()};
-      app.config.electrical = {kind: 'current', value: {bias: 1e-3, amplitude: 0, phase: 0}, sourceSide: 'left', sinkSide: 'right', sourceRange: [0, 1], sinkRange: [0, 1]};
-    }
-    if (p === 'dc') {
-      app.config.mode = 'steady';
-      app.config.ny = 1;
-      app.config.materialMap = Array(app.config.nx).fill(0);
-      app.config.electrical.value = {
-        bias: .2,
-        amplitude: 0,
-        phase: 0
-      };
+      c.materials = [{name: 'n-type semiconductor (illustrative)', rho: 2330, Cp: 700, k: 150, sigma: 160, beta: 0, alpha: 0, alphaSlope: 0, hall: -6.24e-4, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#73d8d0'}];
+      c.materialMap = Array(64 * 8).fill(0);
+      c.thermal = {left: fixed(300), right: fixed(300), top: flux(), bottom: flux()};
+      c.electrical = {kind: 'current', value: {bias: 1e-3, amplitude: 0, phase: 0}, sourceSide: 'left', sinkSide: 'right', sourceRange: [0, 1], sinkRange: [0, 1]};
     }
     app.fill();
     app.dirty();
