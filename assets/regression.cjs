@@ -515,7 +515,7 @@ async function check(label, fn) {
   await check('HTML script paths and static IDs are consistent', () => {
     const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
     const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]); assert.equal(ids.length, new Set(ids).size);
-    for (const m of html.matchAll(/<script src="([^"]+)"/g)) assert(fs.existsSync(path.join(root, m[1])));
+    for (const m of html.matchAll(/<script src="([^"?]+)(?:\?v=[\w.]+)?"/g)) assert(fs.existsSync(path.join(root, m[1])), m[1]); // ?v= busts browser caches
     for (const name of fs.readdirSync(path.join(root, 'assets'))) {
       const code = fs.readFileSync(path.join(root, 'assets', name), 'utf8');
       for (const m of code.matchAll(/app\.\$\('([^']+)'\)/g)) assert(ids.includes(m[1]), 'Missing HTML ID ' + m[1]);
@@ -647,7 +647,7 @@ async function check(label, fn) {
     vm.runInNewContext(fs.readFileSync(path.join(root, 'assets', 'startup.js'), 'utf8'), page);
     handlers.error({target: {tagName: 'SCRIPT', src: 'lib/catalog.js', hasAttribute: name => name === 'data-optional'}}); assert.equal(box.hidden, true);
     handlers.error({target: {tagName: 'SCRIPT', src: 'assets/core.js', hasAttribute: () => false}}); assert(!box.hidden && box.textContent.includes('assets/core.js'));
-    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js" data-optional>'));
+    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js?v=3.2" data-optional>'));
   });
   await check('The 3ω example uses 256 steps per period', async () => {
     const {app: a, el: e} = appContext({preset: 'layers'}); e('preset').value = 'nonlinear'; await a.loadPreset();
