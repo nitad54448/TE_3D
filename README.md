@@ -15,7 +15,7 @@ Serve the folder with any static web server and open `index.html`, for example `
 
 Opening `index.html` directly from disk also works. Browsers do not let a page opened from disk read `lib/*.json`, so the material library is then read from `lib/catalog.js`, the offline copy that `python lib/build_catalog.py` writes next to `lib/index.json`: rebuild it after editing material files.
 
-`index.html` loads its scripts and stylesheet with a version tag (`assets/core.js?v=3.6`), so a browser never combines a new page with cached old scripts. Raise the tag in `index.html` whenever you replace files in `assets/` or `lib/catalog.js`.
+`index.html` loads its scripts and stylesheet with a version tag (`assets/core.js?v=3.7`), so a browser never combines a new page with cached old scripts. Raise the tag in `index.html` whenever you replace files in `assets/` or `lib/catalog.js`.
 
 The interface has a dark and a light theme. It follows the system setting until you choose one with the header toggle, and remembers that choice.
 

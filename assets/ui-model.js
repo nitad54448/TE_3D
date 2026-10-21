@@ -688,7 +688,7 @@
         '1 mA DC enters through a 0.4 mm contact at the middle of the top edge and leaves through one at the middle of the bottom edge of a 4 mm × 10 mm plate, 0.175 mm thick, in Bz = 1 T out of the screen. ' +
         'The Hall probes sit at mid-height on the side edges, P+ right and P− left. Holes drifting down are pushed toward the left edge, so V_H = V(P+) − V(P−) = −R_H·I·B/t = −42.5 µV for a long bar; ' +
         'the narrow contacts barely short the Hall field at mid-height, and the computed V_H is −42.2 µV. The side edges are held at 300 K, so no Ettingshausen temperature difference reaches the probes (isothermal Hall voltage). ' +
-        'Try: reverse the field or the current (V_H changes sign); widen the contacts to the full edge (they short the Hall field: −41.1 µV); move a probe off mid-height (a misalignment voltage appears, removed by averaging +B and −B); ' +
+        'Try: reverse the field or the current (V_H changes sign); widen the contacts to the full edge (they short the Hall field: −41.1 µV); move a probe off mid-height (a misalignment offset appears; isolate the Hall signal with [V(+B) − V(−B)]/2); ' +
         'an AC drive for a lock-in measurement. Material values are model estimates; see the material notes in Ge_p_reference.json.',
       mode: 'steady',
       nx: 20,
@@ -783,7 +783,7 @@
         description: 'Hall bar: 1 mA DC along an 8 mm × 1 mm bar of n-type semiconductor, 0.5 mm thick (depth), in Bz = 1 T out of the screen. ' +
           'Electrons (R_H = −6.24·10⁻⁴ m³/C, n = 10²² m⁻³, mobility 0.1 m²/Vs) are pushed toward the bottom edge, so the Hall voltage between the probes at mid-length is ' +
           'V_H = V(P+) − V(P−) = R_H·I·B/t = −1.248 mV. Try: reverse the field or the current (V_H changes sign); shorten the bar (the current contacts short the Hall voltage); ' +
-          'move a probe off-centre (a misalignment voltage appears, removed by averaging +B and −B); raise B (V_H stays linear while the two-terminal resistance rises: geometric magnetoresistance); ' +
+          'move a probe off-centre (a misalignment offset appears; isolate the Hall signal with [V(+B) − V(−B)]/2); raise B (V_H stays linear while the two-terminal resistance rises: geometric magnetoresistance); ' +
           'add a Nernst coefficient with a temperature difference between the ends (Nernst voltage). Material values are illustrative.',
         mode: 'steady', nx: 64, ny: 8, lx: .008, ly: .001, depth: .0005, magneticField: 1,
         hallProbes: {plus: {x: .5, y: 0}, minus: {x: .5, y: 1}}

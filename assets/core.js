@@ -1411,7 +1411,7 @@
               periodicError: Number.isFinite(error) ? error : null,
               finalTemperature: [...T],
               method: this.hallActive || this.righiLeducActive
-                ? `BDF2 / nonlinear Picard / ${this.hallActive ? 'banded LU' : 'matrix-free CG'} (electrical), ${this.righiLeducActive ? 'banded LU' : 'matrix-free CG'} (thermal)`
+                ? `BDF2 / nonlinear Picard / ${this.hallActive ? 'banded LU' : 'matrix-free CG'} (electrical), ${this.righiLeducActive || this.nernstActive ? 'banded LU' : 'matrix-free CG'} (thermal)`
                 : 'BDF2 / nonlinear Picard / matrix-free CG',
               converged,
               diagnostics: {
@@ -2158,14 +2158,14 @@
         };
       };
       // Field-induced transport in the painted materials, by the solver's own activation rule (Solver2D:
-      // hallActive, righiLeducActive). Bz = 0 or all-zero coefficients solve exactly the 2D model.
+      // hallActive, nernstActive, righiLeducActive). Bz = 0 or all-zero coefficients solve exactly the 2D model.
       TE.fieldEffects = c => {
         const B = c.magneticField ?? 0,
           used = new Set(c.materialMap ?? []),
           any = key => B !== 0 && (c.materials ?? []).some((m, i) => used.has(i) && Boolean(m?.[key]));
         return {
           electrical: any('hall') || any('magnetoresistance') || any('nernst'),
-          thermal: any('righiLeduc'),
+          thermal: any('righiLeduc') || any('nernst'),
           // A transverse (Hall-type) voltage needs a Hall, Nernst or Righi–Leduc coefficient.
           transverse: any('hall') || any('nernst') || any('righiLeduc')
         };
