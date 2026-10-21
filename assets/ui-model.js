@@ -234,9 +234,15 @@
       'electrical.value.bias': 'bias',
       'electrical.value.amplitude': 'amplitude',
       'electrical.value.phase': 'phase',
-      magneticField: 'magneticField'
+      magneticField: 'magneticField',
+      'sweep.min': 'sweepMin',
+      'sweep.max': 'sweepMax',
+      'sweep.points': 'sweepPoints',
+      'sweep.spacing': 'sweepSpacing'
     };
     if (direct[path]) return [app.$(direct[path])];
+    if (path === 'sweep.range') return [app.$('sweepMin'), app.$('sweepMax')];
+    if (path === 'sweep') return ['sweepMin', 'sweepMax', 'sweepPoints', 'sweepSpacing'].map(app.$);
     const probe = path.match(/^hallProbes\.(plus|minus)$/);
     if (probe) return probe[1] === 'plus' ? [app.$('hallPlusX'), app.$('hallPlusY')] : [app.$('hallMinusX'), app.$('hallMinusY')];
     if (path === 'hallProbes') return ['hallPlusX', 'hallPlusY', 'hallMinusX', 'hallMinusY'].map(app.$);
@@ -279,9 +285,24 @@
           depth: app.config.depth
         });
         Object.assign(draft, g);
-        issues.push(...TE.validate2DConfig(draft));
-        if (draft.sweep?.enabled) TE.validateSweep(draft);
+        const baseIssues = TE.validate2DConfig(draft);
+        issues.push(...(draft.sweep?.enabled ? baseIssues.filter(e => e.path !== 'frequency') : baseIssues));
         warnings = TE.modelWarnings(draft);
+        if (draft.sweep?.enabled) {
+          try {
+            TE.validateSweep(draft);
+          } catch (e) {
+            if (e.validationIssues) {
+              for (const item of e.validationIssues) {
+                const path = item.path === 'frequency' ? 'sweep.range' : item.path;
+                if (!issues.some(x => x.path === path && x.message === item.message)) issues.push({path, message: item.message});
+              }
+            } else {
+              const path = /minimum|maximum|too close/.test(e.message) ? 'sweep.range' : /points|retained data/.test(e.message) ? 'sweep.points' : /spacing/.test(e.message) ? 'sweep.spacing' : /AC excitation/.test(e.message) ? 'electrical.value.amplitude' : 'sweep';
+              issues.push({path, message: e.message});
+            }
+          }
+        }
       } catch (e) {
         issues.push({
           path: 'model',
@@ -388,7 +409,21 @@
   app.removeMaterial = (index) => {
     if (app.config.materials.length <= 1) return;
     try {
-      app.config = app.read();
+      try {
+        app.config = app.read();
+      } catch {
+        document.querySelectorAll('[data-material]').forEach(card => {
+          const i = Number(card.dataset.material), m = app.config.materials[i];
+          if (!m || i === index) return;
+          card.querySelectorAll('[data-key]').forEach(e => {
+            const key = e.dataset.key, exponent = Number(e.dataset.exponent ?? 0);
+            try {
+              if (['name', 'color'].includes(key)) m[key] = e.value;
+              else if (e.value.trim() !== '') m[key] = exponent ? TE.readScaledInput(e, exponent) : TE.readNumberInput(e);
+            } catch {}
+          });
+        });
+      }
       app.config.materials.splice(index, 1);
       for (let k = 0; k < app.config.materialMap.length; k++) {
         const m = app.config.materialMap[k];
@@ -702,6 +737,7 @@
           app.$('bodeRepresentation').value = 'complex';
         }
       } catch (e) {
+        if (token !== app.presetToken) return;
         app.$('preset').value = app.presetShown;
         app.notice('Could not load the example: ' + e.message, true);
       }

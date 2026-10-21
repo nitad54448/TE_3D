@@ -7,6 +7,7 @@
   };
   app.dirty = function dirty() {
     if (app.worker) return;
+    app.presetToken++;
     app.showPreset('custom'); // the model no longer matches the loaded example
     // Exports stay disabled until a new result is displayed, including while browsing sweep points.
     app.setExports(false);
@@ -124,7 +125,10 @@
   // Sweep selections always refer to the saved computed model.
 
   app.$('sweepPoint').onchange = () => app.selectSweepPoint(Number(app.$('sweepPoint').value));
-  for (const id of ['bodeQuantity', 'bodeHarmonic', 'bodeRepresentation', 'bodeReference', 'bodeNormalization', 'bodeScale', 'bodeDb', 'bodeX', 'bodeY', 'bodeFloor', 'bodeUnwrap']) app.$(id).addEventListener('input', app.drawBode);
+  for (const id of ['bodeQuantity', 'bodeHarmonic', 'bodeRepresentation', 'bodeReference', 'bodeNormalization', 'bodeScale', 'bodeDb', 'bodeX', 'bodeY', 'bodeFloor', 'bodeUnwrap']) app.$(id).addEventListener('input', e => {
+    if (e?.target?.dataset) for (const k of ['rawNumber', 'displayNumber', 'siNumber', 'siDisplay']) delete e.target.dataset[k];
+    app.drawBode();
+  });
   for (const id of ['bodeMagnitude', 'bodePhase']) app.$(id).onclick = e => {
     const node = e.target.closest('[data-bode-point]');
     if (node) app.selectSweepPoint(Number(node.dataset.bodePoint));
@@ -197,8 +201,11 @@
     if (e.target.matches('input[type=number]') && e.target.value.trim() !== '') {
       try {
         TE.setNumberInput(e.target, TE.readNumberInput(e.target));
-        app.meshPreview();
-        app.validateUI();
+        if (e.target.closest?.('#bodeCard')) app.drawBode();
+        else {
+          app.meshPreview();
+          app.validateUI();
+        }
       } catch {}
     }
   });

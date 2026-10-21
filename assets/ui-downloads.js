@@ -87,6 +87,8 @@
   app.exportModelProject = async () => {
     if (app.exporting || app.importingProject || app.worker) return;
     app.exporting = true;
+    const wasSaveDisabled = app.$('save').disabled;
+    app.$('save').disabled = true;
     try {
       const model = TE.checkEditorModel(JSON.parse(JSON.stringify(app.applyGeometry())));
       const zip = await TE.zipFiles([{
@@ -107,6 +109,7 @@
       app.notice('Save failed: ' + e.message, true);
     } finally {
       app.exporting = false;
+      app.$('save').disabled = Boolean(app.worker) || wasSaveDisabled;
     }
   };
   app.exportPdf = () => {

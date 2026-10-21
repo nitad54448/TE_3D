@@ -159,7 +159,8 @@
     }
   };
   app.runSimulation = () => {
-    if (app.worker || app.importingProject) return;
+    if (app.worker || app.importingProject || app.exporting) return;
+    app.presetToken++;
     try {
       app.applyGeometry();
       TE.from2DConfig(app.config);

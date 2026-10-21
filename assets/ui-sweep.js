@@ -1,26 +1,34 @@
 (function (app) {
   'use strict';
-  // Probe position in % as an exact fraction; an empty field reads as 0, as before (drawBode reports it).
-  const fraction = id => {
+  // Read a Bode number input (scaled for % probe coordinates). Inactive fields keep their valid entry or
+  // fall back to a default so switching to a terminal quantity or physical/complex scale never blocks plots or exports.
+  const readBodeNumber = (id, active, ok, fallback, scale = 0) => {
+    let v;
     try {
-      return TE.readScaledInput(app.$(id), 2);
+      v = scale ? TE.readScaledInput(app.$(id), scale) : TE.readNumberInput(app.$(id));
     } catch {
-      return Number(app.$(id).value) / 100;
+      return active ? NaN : fallback;
     }
+    return active || ok(v) ? v : fallback;
   };
   app.bodeOptions = function bodeOptions() {
+    const quantity = app.$('bodeQuantity').value,
+      spatial = !['terminalVoltage', 'current', 'impedance', 'hallVoltage'].includes(quantity),
+      representation = app.$('bodeRepresentation').value,
+      scale = app.$('bodeScale').value,
+      db = representation !== 'complex' && scale === 'db';
     return {
-      quantity: app.$('bodeQuantity').value,
+      quantity,
       harmonic: Number(app.$('bodeHarmonic').value),
       reference: app.$('bodeReference').value,
       normalization: app.$('bodeNormalization').value,
-      phaseFloor: Number(app.$('bodeFloor').value),
+      phaseFloor: readBodeNumber('bodeFloor', true, v => v >= 0, 1e-12),
       unwrap: app.$('bodeUnwrap').value === 'unwrapped',
-      x: fraction('bodeX'),
-      y: fraction('bodeY'),
-      scale: app.$('bodeScale').value,
-      dbReference: Number(app.$('bodeDb').value),
-      representation: app.$('bodeRepresentation').value
+      x: readBodeNumber('bodeX', spatial, v => Number.isFinite(v) && v >= 0 && v <= 1, .5, 2),
+      y: readBodeNumber('bodeY', spatial, v => Number.isFinite(v) && v >= 0 && v <= 1, .5, 2),
+      scale,
+      dbReference: readBodeNumber('bodeDb', db, v => Number.isFinite(v) && v > 0, 1),
+      representation
     };
   };
   app.refreshSweepPoints = function refreshSweepPoints() {
@@ -102,10 +110,17 @@
     let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${app.esc(title)}"><rect width="${W}" height="${H}" fill="${colors.background}"/><text x="${L}" y="16" fill="${colors.text}" font-size="11">${app.esc(title)}</text>`;
     if (!numbers.length) return svg + `<text x="85" y="100" fill="${colors.text}" font-size="12">No valid values for this selection.</text></svg>`;
     let lo = Math.min(...numbers),
-      hi = Math.max(...numbers),
-      pad = hi === lo ? Math.max(Math.abs(lo) * .05, 1e-12) : (hi - lo) * .1;
-    lo -= pad;
-    hi += pad;
+      hi = Math.max(...numbers);
+    if (hi - lo <= 1e-9 * Math.max(Math.abs(lo), Math.abs(hi), 1e-12)) {
+      const mid = (lo + hi) / 2,
+        pad = Math.max(Math.abs(mid) * .05, 1e-12);
+      lo = mid - pad;
+      hi = mid + pad;
+    } else {
+      const pad = (hi - lo) * .1;
+      lo -= pad;
+      hi += pad;
+    }
     const fx = v => log ? Math.log10(v) : v,
       start = fx(rows[0].frequency),
       end = fx(rows.at(-1).frequency),
@@ -113,7 +128,8 @@
       X = v => end === start ? L + (W - L - R) / 2 : L + (fx(v) - start) / (end - start) * (W - L - R),
       Y = v => H - B - (v - lo) / (hi - lo) * (H - B - T);
     for (let i = 0; i <= 4; i++) {
-      const v = lo + (hi - lo) * i / 4,
+      const tick = lo + (hi - lo) * i / 4,
+        v = Math.abs(tick) < 1e-9 * (hi - lo) ? 0 : tick,
         f = start + (end - start) * i / 4;
       svg += `<path d="M${L} ${Y(v)}H${W - R}" stroke="${colors.grid}"/><text x="${L - 7}" y="${Y(v) + 3}" text-anchor="end" fill="${colors.text}" font-size="10">${app.tick(v, lo, hi)}</text>` + (end === start && i !== 2 ? '' : `<text x="${L + (W - L - R) * i / 4}" y="${H - 25}" text-anchor="middle" fill="${colors.text}" font-size="10">${app.fmt(log ? 10 ** f : f)}</text>`);
     }
@@ -174,10 +190,11 @@
     if (app.$('bodeReference').value === 'time') app.$('bodeNormalization').value = 'raw';
     app.$('sweepStatus').textContent = `${rs.filter(r => r.converged).length}/${app.sweepResult.frequencies.length} converged · ${app.sweepResult.status}${app.worker ? ' · computation continues' : ''}.`;
     try {
-      for (const id of ['bodeFloor', 'bodeX', 'bodeY']) TE.assert(app.$(id).value.trim() !== '', 'Complete Bode numerical inputs.');
-      const rows = TE.bodeRows(rs, app.bodeOptions()),
-        db = !complex && app.$('bodeScale').value === 'db',
-        dbReference = Number(app.$('bodeDb').value);
+      for (const id of ['bodeFloor', ...(spatial ? ['bodeX', 'bodeY'] : [])]) TE.assert(app.$(id).value.trim() !== '', 'Complete Bode numerical inputs.');
+      const options = app.bodeOptions(),
+        rows = TE.bodeRows(rs, options),
+        db = !complex && options.scale === 'db',
+        dbReference = options.dbReference;
       TE.assert(!db || Number.isFinite(dbReference) && dbReference > 0, 'The dB reference must be strictly positive.');
       const [top, bottom] = app.bodeCharts(rows, {
         representation: complex ? 'complex' : 'polar',

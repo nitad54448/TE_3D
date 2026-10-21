@@ -354,6 +354,7 @@
       ctx.fillRect(left + i * w / c.nx, top + (c.ny - j - 1) * h / c.ny, w / c.nx + .4, h / c.ny + .4);
     }
     app.contacts(f, c);
+    app.hallMarkers(f, c);
     const scale = app.fieldFormat(lo, hi, surface.unit);
     app.$('surfaceMin').textContent = scale.format(lo);
     app.$('surfaceMax').textContent = scale.format(hi);

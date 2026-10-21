@@ -33,6 +33,7 @@
   TE.checkEditorModel = c => {
     assert(object(c) && c.version === TE.modelVersion, `Unsupported model version: expected "version": ${TE.modelVersion}.`);
     TE.assertValid2DConfig(c);
+    assert(c.mode === TE.inferSimulationMode(c), 'Model mode disagrees with its excitation.');
     assert(c.materials.every(m => ['rho', 'Cp', 'k', 'sigma', 'alpha'].every(k => typeof m[k] === 'number')), 'The editor requires scalar material reference values.');
     assert([64, 128, 256, 512, 1024].includes(c.samples), 'Unsupported editor time-step count.');
     assert(c.materials.every(m => typeof m.name === 'string' && m.name.trim().length > 0 && m.name.length <= 200), 'Invalid material name: use 1 to 200 characters.');
@@ -235,5 +236,7 @@
     for (const key of ['x', 'y']) assert(Number.isFinite(o[key]) && o[key] >= 0 && o[key] <= 1, 'Invalid Bode probe.');
     assert(Number.isFinite(o.phaseFloor) && o.phaseFloor >= 0 && Number.isFinite(o.dbReference) && o.dbReference > 0, 'Invalid Bode threshold/reference.');
     assert(o.representation === undefined || ['polar', 'complex'].includes(o.representation), 'Invalid Bode representation.');
+    assert(o.quantity !== 'impedance' || o.harmonic === 1, 'Impedance uses the fundamental (1ω).');
+    assert(o.quantity === 'impedance' || o.reference !== 'time' || o.normalization === 'raw', 'Time reference has no amplitude for normalization.');
   };
 })(globalThis.TE);

@@ -41,6 +41,7 @@
     const file = app.$('projectFile').files[0];
     if (!file || app.worker || app.importingProject) return;
     if (app.exporting) { app.notice('Wait for the current ZIP export to finish, then import the project.'); app.$('projectFile').value = ''; return; }
+    app.presetToken++;
     app.importingProject = true;
     const main = document.querySelector('main'), wasInert = main.inert;
     main.inert = true;

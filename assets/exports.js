@@ -67,16 +67,18 @@
   function plotSvg(x, values, label) {
     let lo = Math.min(...values),
       hi = Math.max(...values);
-    if (lo === hi) {
-      const delta = Math.max(Math.abs(lo) * 1e-6, 1e-12);
-      lo -= delta;
-      hi += delta;
+    if (hi - lo <= 1e-9 * Math.max(Math.abs(lo), Math.abs(hi), 1e-12)) {
+      const mid = (lo + hi) / 2,
+        delta = Math.max(Math.abs(mid) * 1e-6, 1e-12);
+      lo = mid - delta;
+      hi = mid + delta;
     }
     const X = v => 75 + 420 * (v - x[0]) / (x.at(-1) - x[0] || 1),
       Y = v => 205 - 165 * (v - lo) / (hi - lo);
     let b = `<text x="15" y="18" font-size="12">${esc(label)}</text>`;
     for (let i = 0; i < 5; i++) {
-      const v = lo + (hi - lo) * i / 4,
+      const tick = lo + (hi - lo) * i / 4,
+        v = Math.abs(tick) < 1e-9 * (hi - lo) ? 0 : tick,
         t = x[0] + (x.at(-1) - x[0]) * i / 4;
       b += `<path d="M75 ${Y(v)}H495" stroke="#ddd"/><text x="70" y="${Y(v) + 3}" text-anchor="end" font-size="9">${esc(fmt(v))}</text><text x="${X(t)}" y="222" text-anchor="middle" font-size="9">${esc(fmt(t))}</text>`;
     }

@@ -874,15 +874,22 @@
             const fixed = new Map();
             this.source.forEach(i => fixed.set(i, 0));
             this.sink.forEach(i => fixed.set(i, 0));
-            let solve;
+            let solve, unit;
             try {
               solve = TE.cellSystem(m, K, zero, fixed);
+              this.source.forEach(i => fixed.set(i, 1));
+              unit = solve(zero, fixed);
             } catch (error) {
               throw TE.electricalSolveError(error);
             }
-            cache = this.electricCache = {rho: p.map(v => v.rho), W, l, tr, solve};
+            const Ihom = cellFlows(G, W, unit);
+            let Iunit = 0;
+            m.links.forEach((l, k) => {
+              Iunit += Ihom[k] * (unit[l.a] - unit[l.b]);
+            });
+            cache = this.electricCache = {rho: p.map(v => v.rho), W, l, tr, solve, unit, Ihom, Iunit};
           }
-          const {W, l: lw, tr: tw} = cache;
+          const {W, l: lw, tr: tw, unit, Ihom, Iunit} = cache;
           for (let c = 0; c < nc; c++) {
             const NB = this.materials[m.cells[c].m].nernst * B,
               o = 4 * c,
@@ -913,24 +920,16 @@
           this.source.forEach(i => fixed.set(i, 0));
           this.sink.forEach(i => fixed.set(i, 0));
           // Same diagnosis as the solve without field (electric): a singular or nonfinite banded solve.
-          const guarded = rhs => {
-            try {
-              return cache.solve(rhs, fixed);
-            } catch (error) {
-              throw TE.electricalSolveError(error);
-            }
-          };
-          const base = guarded(src.map(v => -v));
-          this.source.forEach(i => fixed.set(i, 1));
-          const unit = guarded(zero),
-            Ibase = cellFlows(G, W, base, flow0),
-            Ihom = cellFlows(G, W, unit);
-          let Iunit = 0,
-            IbaseTotal = 0;
+          let base;
+          try {
+            base = cache.solve(src.map(v => -v), fixed);
+          } catch (error) {
+            throw TE.electricalSolveError(error);
+          }
+          const Ibase = cellFlows(G, W, base, flow0);
+          let IbaseTotal = 0;
           m.links.forEach((l, k) => {
-            const du = unit[l.a] - unit[l.b];
-            Iunit += Ihom[k] * du;
-            IbaseTotal += Ibase[k] * du;
+            IbaseTotal += Ibase[k] * (unit[l.a] - unit[l.b]);
           });
           TE.assert(Iunit > 0 && Number.isFinite(Iunit) && Number.isFinite(IbaseTotal), 'Electrodes have no conducting connection.');
           let terminalVoltage;
@@ -1250,7 +1249,13 @@
             for (let j = 0; j < m; j++) x -= gamma[j] * (dT[j][i] + beta * dF[j][i]);
             return x;
           });
-          return next.every(v => Number.isFinite(v) && v >= 1 && v <= 2000) ? next : step;
+          if (!next.every(v => Number.isFinite(v) && v >= 1 && v <= 2000)) return step;
+          try {
+            this.properties(next);
+            return next;
+          } catch {
+            return step;
+          }
         }
         snapshot(T, t = 0, steady = false) {
           const m = this.mesh,
@@ -1803,6 +1808,7 @@
             });
             const best = Math.max(...new Set(c.materialMap.map(id => sigma[id])));
             for (const name of ['source', 'sink']) {
+              if (contacts[name].length < 2) continue;
               let touching = 0;
               for (const node of contacts[name]) {
                 const i = node % (c.nx + 1),

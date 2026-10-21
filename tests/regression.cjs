@@ -141,30 +141,49 @@ async function check(label, fn) {
     assert(Math.abs(TE.harmonicMap(r, 'temperature', 1, 'phase').values[0] - 126.86989764584402) < 1e-10);
   });
   await check('Probe readout under the map shows the displayed field at the probe', () => {
-    const f = TE.formatInputNumber, readout = () => el('probeReadout').textContent;
+    // Values are shown with the scale of their field: one unit prefix and one last digit (3 significant digits of the span).
+    const readout = () => el('probeReadout').textContent,
+      f = (r, key, n, representation, unit) => {const {lo, hi} = TE.harmonicMap(r, key, n, representation).range; return app.fieldFormat(lo, hi, unit).text;};
     app.result = dc; setView(); el('results').hidden = false; app.drawResults(); // probe node 7: x = 0.5 mm, top edge
     assert.equal(el('probeReadout').hidden, false);
-    assert.equal(readout(), `Probe x = 0.5 mm, y = 1 mm · Temperature · DC = ${f(dc.temperature[7])} K · V = ${f(dc.voltage[7])} V`);
+    assert.equal(readout(), 'Probe x = 0.5 mm, y = 1 mm · Temperature · DC = 300.02500 K · V = 1.000 mV'); // T spans 0.025 K, V 2 mV
+    assert.equal(el('scaleMax').textContent, '300.02500'); assert.equal(el('scaleUnit').textContent, 'K');
     app.probe = 0; app.drawResults(); assert(readout().startsWith('Probe x = 0 mm, y = 0 mm'));
     // Cell fields: mean of the cells sharing the probe node (node 1 touches cells 0 and 1).
     assert.deepEqual(TE.probePhasor(dc, 'qx', 0, 1), {re: (dc.qx[0] + dc.qx[1]) / 2, im: 0});
     Object.assign(el('field'), {value: 'qx', selectedOptions: [{text: 'Heat flux qx'}]}); app.probe = 1; app.drawResults();
-    assert(readout().includes(`Heat flux qx · DC = ${f((dc.qx[0] + dc.qx[1]) / 2)} W/m² · T = ${f(dc.temperature[1])} K · V = `));
+    assert(readout().includes(`Heat flux qx · DC = ${f(dc, 'qx', 0, 'amplitude', 'W/m²')((dc.qx[0] + dc.qx[1]) / 2)} · T = 300.01875 K · V = `), readout());
     // Periodic: same harmonic and representation as the map; no DC extras.
     app.result = ac; setView(); app.drawResults();
-    assert.equal(readout(), `Probe x = 0.5 mm, y = 1 mm · Temperature · 2ω imaginary part = ${f(ac.harmonics.temperature[2][7].im)} K`);
+    assert.equal(readout(), `Probe x = 0.5 mm, y = 1 mm · Temperature · 2ω imaginary part = ${f(ac, 'temperature', 2, 'imaginary', 'K')(ac.harmonics.temperature[2][7].im)}`);
     el('representation').value = 'phase'; app.drawResults();
-    assert(readout().endsWith(`2ω phase = ${f(app.phase(ac.harmonics.temperature[2][7]))} °`));
+    assert(readout().endsWith(`2ω phase = ${app.fixed(app.phase(ac.harmonics.temperature[2][7]), .1)} °`), readout()); // 0.1° over a ±180° scale
     el('harmonic').value = '1'; app.drawResults(); // no 1ω temperature without Seebeck/TCR: masked like the map
     assert(readout().endsWith('1ω phase = — (below the phase threshold)'));
     for (const id of ['resultCanvas', 'profileCanvas']) el(id).getContext = () => ({clearRect: noop});
     app.clearResults(); assert.equal(el('probeReadout').hidden, true); assert.equal(readout(), '');
   });
+  await check('Displayed numbers carry the digits the result resolves, not the full binary value', () => {
+    assert.deepEqual([app.fmt(229.6061283), app.fmt(.02434741386), app.fmt(2e6), app.fmt(-1.2481e-4), app.fmt(0), app.fmt(-1e-20 * 0)], ['229.6', '0.02435', '2E6', '-1.248E-4', '0', '0']);
+    const leg = app.rangeFormat(229.6061283, 300.1273); // a 70.5 K span: 0.01 K, both ends on the same digit
+    assert.deepEqual([leg(229.6061283), leg(300.1273), leg(276.2344905)], ['229.61', '300.13', '276.23']);
+    const small = app.rangeFormat(300, 300.0000124); // a 12 µK span keeps the digits that show it
+    assert.deepEqual([small(300), small(300.0000124)], ['300.0000000', '300.0000124']);
+    assert.equal(app.rangeFormat(300, 300)(300), '300'); // uniform field
+    const V = app.fieldFormat(0, .05143, 'V'); // a voltage scale in mV
+    assert.deepEqual([V.unit, V.format(0), V.text(.02434741386)], ['mV', '0', '24.35 mV']);
+    const J = app.fieldFormat(-2.5e6, 2.5e6, 'A/m²'), phase = app.fieldFormat(-180, 180, '°');
+    assert.deepEqual([J.text(1234567.89), J.text(-3e-9), phase.text(-17.2345)], ['1.235 MA/m²', '0 MA/m²', '-17.2 °']);
+    assert.deepEqual([app.si(2, 'A'), app.si(.0514304, 'V'), app.si(1.0286e-1, 'W'), app.si(-4.2186e-5, 'V'), app.si(0, 'V'), app.si(300.12, 'K')],
+      ['2 A', '51.43 mV', '102.9 mW', '-42.19 µV', '0 V', '300.1 K']);
+    assert.deepEqual([app.fixed(1.0000001e-7, 1e-10), app.fixed(-4e-16, 5.1e-5)], ['1.000E-7', '0']); // E notation; noise below the last digit is 0
+    assert.equal(app.tick(300.00012, 300, 300.0004), '300.00012'); // axis ticks: two significant digits of the span
+  });
   await check('Colour scales of nodal fields span the nodal extremes', () => {
     const map = TE.harmonicMap(dc, 'temperature', 0);
     assert.equal(map.range.lo, 300); assert(Math.min(...map.values) > 300);
     assert.equal(map.range.hi, Math.max(...dc.temperature)); assert.deepEqual(TE.surfaceField(dc, 'temperature').range, map.range);
-    app.result = dc; setView(); app.drawResults(); assert.equal(el('scaleMin').textContent, '300');
+    app.result = dc; setView(); app.drawResults(); assert.equal(el('scaleMin').textContent, '300.00000'); // the last digit of the 0.025 K span
     assert.deepEqual(TE.harmonicMap(ac, 'temperature', 1, 'phase').range, {lo: -180, hi: 180});
   });
   await check('Sweep selection preserves harmonic, probe, representation and time fraction', () => {
@@ -275,7 +294,7 @@ async function check(label, fn) {
     assert.equal((await TE.readProjectZip(zip)).result, null); assert(el('status').textContent.includes('inputs changed after the last run'));
     el('projectFile').files = [zip]; await app.importProject();
     assert.deepEqual(app.config, model()); assert.equal(app.result, null); assert.equal(el('resultEmpty').hidden, false);
-    assert(el('status').textContent.startsWith('Imported project without results'));
+    assert(el('status').textContent.startsWith('Imported project without results'), el('status').textContent);
     const mixed = [{name: 'project.json', data: JSON.stringify({format: 'thermoelectric-lab-project', version: TE.projectVersion, kind: 'model'})},
       {name: 'model.json', data: JSON.stringify(dc.config)}, {name: 'results.json', data: JSON.stringify(dc)}];
     await assert.rejects(() => TE.zipFiles(mixed).then(TE.readProjectZip), /Project kind disagrees/);
@@ -421,6 +440,90 @@ async function check(label, fn) {
     assert((await files.find(f => f.name === 'terminal.csv').data.text()).startsWith('sample,time_in_cycle_s,absolute_time_s,voltage_V,current_A,hall_voltage_V'));
     TE.validateProjectBode({...bode, quantity: 'hallVoltage'});
   });
+  await check('Cu / BiTe / Cu leg (startup example): cold junction matches the cooler balance; the other examples keep their setups', async () => {
+    // Constant properties: α·Tc·I = I²R/2 + I²R_Cu + K(Th − Tc), with the Joule heat of the insulated copper contact
+    // and Th the computed hot-junction temperature (the right contact conducts the heat to 300 K).
+    const c = TE.default2D(); for (const m of c.materials) Object.assign(m, {beta: 0, alphaSlope: 0});
+    const r = TE.run2D(c), row = 4 * (c.nx + 1), Tc = r.temperature[row + 4], Th = r.temperature[row + 20];
+    const I = 2, a = 2e-4, R = 2e-3 / (1e5 * 1e-6), Rcu = 5e-4 / (5.8e7 * 1e-6), K = 1.5e-6 / 2e-3;
+    close(Tc, (K * Th + I * I * (R / 2 + Rcu)) / (K + a * I), 2e-5, 'cold junction');
+    assert(Math.abs(r.temperature[row] - Tc) < .01 && Th > 300 && Th < 300.2 && Math.abs(r.energyResidual) < 1e-8);
+    const full = TE.run2D(TE.default2D()); // with β and α′: the example as shipped
+    assert(Math.min(...full.temperature) > 225 && Math.min(...full.temperature) < 235 && full.terminalVoltage > 0);
+    const {app: a2, el: e} = appContext({preset: 'layers'});
+    assert.equal(a2.config.description, TE.default2D().description);
+    for (const p of ['spreading', 'joule', 'nonlinear', 'seebeck']) {
+      e('preset').value = p; await a2.loadPreset();
+      const m = a2.config;
+      assert.equal(m.description, undefined, p); assert.equal(m.thermal.left.kind, 'temperature', p); assert.equal(TE.validate2DConfig(m).length, 0, p);
+      assert.equal(m.mode, ['joule', 'nonlinear'].includes(p) ? 'periodic' : 'steady', p);
+    }
+  });
+  await check('Joule heating with contacts: parabola without substrate, cosh fin profile with it', async () => {
+    const {app: a2, el: e} = appContext({preset: 'layers'}); e('preset').value = 'dc'; await a2.loadPreset();
+    const c = a2.config, q = (.4 / (c.ly * c.depth)) ** 2 / 1e5, L = 2e-3, k = 2, h = c.thermal.bottom.h;
+    const mid = r => (r.temperature[c.nx / 2] + r.temperature[c.nx + 1 + c.nx / 2]) / 2 - 300; // mean over the thickness
+    const noSubstrate = structuredClone(c); noSubstrate.thermal.bottom.h = 0;
+    close(mid(TE.run2D(noSubstrate)), q * L * L / (8 * k), 5e-3, 'parabola');
+    const r = TE.run2D(c), m = Math.sqrt(h / (k * c.ly));
+    close(mid(r), q * c.ly / h * (1 - 1 / Math.cosh(m * L / 2)), 1.5e-2, 'fin');
+    let substrate = 0; const dx = c.lx / c.nx;
+    for (let i = 0; i <= c.nx; i++) substrate += h * (r.temperature[i] - 300) * (i === 0 || i === c.nx ? dx / 2 : dx) * c.depth;
+    close(substrate / r.electricalPower, 1 - Math.tanh(m * L / 2) / (m * L / 2), 1e-2, 'share of the heat through the substrate');
+  });
+  await check('3D: a strong Ettingshausen cooler converges; the second-law limit σN²B²T/κ < 1 is enforced', () => {
+    // Current along x in Bz = 1 T pumps heat across y; bottom at 300 K, top insulated. N·B = 200 µV/K with
+    // σ = 1E5 S/m and κ = 1.5 W/(m K): figure of merit 0.8 at 300 K. Plain Picard contracts by only 0.8 per
+    // iteration here and failed from 0.5 A; implicit Ettingshausen flows and Anderson acceleration converge.
+    const flux = () => ({kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0});
+    const cooler = (I, B = 1) => ({...TE.default2D(), description: undefined, mode: 'steady', nx: 16, ny: 16, lx: 4e-3, ly: 1.6e-3, depth: 1e-3, magneticField: B,
+      materials: [{name: 'E', color: '#73d8d0', rho: 7700, Cp: 150, k: 1.5, sigma: 1e5, alpha: 0, beta: 0, alphaSlope: 0, hall: 0, nernst: 2e-4, righiLeduc: 0, magnetoresistance: 0}],
+      materialMap: Array(256).fill(0), thermal: {left: flux(), right: flux(), top: flux(), bottom: {kind: 'temperature', value: {bias: 300, amplitude: 0, phase: 0}, h: 0}},
+      electrical: {kind: 'current', value: {bias: I, amplitude: 0, phase: 0}, sourceSide: 'left', sinkSide: 'right', sourceRange: [0, 1], sinkRange: [0, 1]}});
+    assert.equal(TE.validate2DConfig(cooler(1)).length, 0);
+    for (const [I, top] of [[-1, 263.33], [.5, 320.83], [1, 343.33], [1.5, 367.5]]) { // below the limit: Z_E·T = 0.8·T/300 K < 1
+      const r = TE.run2D(cooler(I));
+      close(r.temperature[16 * 17 + 8], top, 1e-4, `top at ${I} A`);
+      assert(r.diagnostics.iterations < 80 && Math.abs(r.energyResidual) < 1e-9, `${I} A: ${r.diagnostics.iterations} iterations`);
+    }
+    // Above 1 the short-circuit conductivity κ − σN²B²T is negative: rejected before the run, explained after.
+    assert(TE.validate2DConfig(cooler(1, 1.3)).some(i => i.path === 'materials.0.nernst' && /figure of merit/.test(i.message)));
+    assert.throws(() => TE.run2D(cooler(4)), /Ettingshausen figure of merit .* ≥ 1/); // no convergence
+    assert.throws(() => TE.run2D(cooler(2)), /At 393\.3 K, E has an Ettingshausen figure of merit σN²B²T\/κ = 1\.05 ≥ 1/); // converged past the limit
+    // Hall and Seebeck terms enter the exact limit; B = 0 or N = 0 gives no limit.
+    close(TE.ettingshausenMerit(1e-5, 0, 1.5, {nernst: 2e-4}, 300, 1), .8, 1e-12, 'σN²B²T/κ');
+    assert.equal(TE.ettingshausenMerit(1e-5, 2e-4, 1.5, {nernst: 2e-4}, 300, 0), 0);
+    close(TE.ettingshausenMerit(1e-5, 0, 1.5, {nernst: 2e-4, hall: 1e-4}, 300, 1), .8, 1e-12, 'Hall drops out');
+  });
+  await check('Review items: electrical errors in a field, map check, electrode bars, closed report plots, one-point Bode, decades', async () => {
+    // A failed banded solve in a field explains itself like the solve without field.
+    const hall = {...model(), magneticField: 1}; hall.materials = [{...hall.materials[0], hall: 1e-4}];
+    const solver = TE.from2DConfig(hall), T = solver.initial(), cellSystem = TE.cellSystem;
+    TE.cellSystem = () => { throw new Error('Singular linear system: check that the domain is anchored.'); };
+    try { assert.throws(() => solver.electric(T, solver.properties(T).p, 0), /^Error: Electrical solve failed .*Move the electrode onto a conductor/); }
+    finally { TE.cellSystem = cellSystem; }
+    // An invalid Nx or Ny is reported once, without a second error about the material map.
+    for (const [nx, ny] of [[1, 1], [2, 0], [50, 50]]) {
+      const paths = TE.validate2DConfig({...model(), nx, ny}).map(i => i.path);
+      assert(paths.some(p => p === 'nx' || p === 'ny') && !paths.includes('materialMap'), `${nx} × ${ny}: ${paths}`);
+    }
+    assert(TE.validate2DConfig({...model(), materialMap: [0, 0, 0]}).some(i => i.path === 'materialMap')); // a valid mesh still checks it
+    // Drawn electrode bars cover exactly the solver's electrode nodes, also for ranges a hair off a node.
+    for (const [count, range] of [[10, [.3 + 5e-12, 1]], [10, [.3 + 5e-13, .7 - 5e-13]], [7, [0, 1]], [64, [.45, .55]]]) {
+      const c = {...model(), nx: count, ny: 2, materialMap: Array(2 * count).fill(0)}, mesh = TE.from2DConfig({...c, electrical: {...c.electrical, sourceSide: 'bottom', sourceRange: range, sinkSide: 'top', sinkRange: [0, 1]}}).mesh;
+      const nodes = mesh.electrode('bottom', range), [a, b] = TE.electrodeExtent(count, range);
+      assert.deepEqual([a, b], [Math.min(...nodes) / count, Math.max(...nodes) / count], JSON.stringify(range));
+    }
+    assert.equal(TE.electrodeExtent(10, [.31, .39]), null);
+    // Report plots of a converged cycle are closed at t = 1/f (0.5 s at 2 Hz), as on the page.
+    const voltage = TE.resultReport(ac).figures.find(f => f.name === 'figures/terminal-voltage.svg').data;
+    assert(voltage.includes('>0.5</text>') && !voltage.includes('0.492188'), 'closed cycle');
+    // A Bode plot with one point shows one frequency tick, mid-axis.
+    const one = app.bodeSvg([{frequency: 3, magnitude: 1, phase: 0, unit: 'V'}], 'magnitude', {colors: {text: '#000', grid: '#ccc', line: '#00f', point: '#00f', background: '#fff'}});
+    assert.equal((one.match(/>3<\/text>/g) || []).length, 1);
+    // Rounding to a power of ten keeps its decade.
+    assert.deepEqual([app.fixed(9.99999e-6, 1e-10), app.fixed(-9.9999996e-4, 1e-10), app.fixed(99999.6, 1)], ['1.00000E-5', '-0.0010000000', '1.00000E5']);
+  });
   await check('3D: the Hall bar example loads, validates and shows R_H·I·B/t', async () => {
     const {context, app: a, el: e} = appContext({preset: 'layers'});
     e('preset').value = 'hall'; await a.loadPreset();
@@ -484,7 +587,7 @@ async function check(label, fn) {
   await check('HTML script paths and static IDs are consistent', () => {
     const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
     const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]); assert.equal(ids.length, new Set(ids).size);
-    for (const m of html.matchAll(/<script src="([^"]+)"/g)) assert(fs.existsSync(path.join(root, m[1])));
+    for (const m of html.matchAll(/<script src="([^"?]+)(?:\?v=[\w.]+)?"/g)) assert(fs.existsSync(path.join(root, m[1])), m[1]); // ?v= busts browser caches
     for (const name of fs.readdirSync(path.join(root, 'assets'))) {
       const code = fs.readFileSync(path.join(root, 'assets', name), 'utf8');
       for (const m of code.matchAll(/app\.\$\('([^']+)'\)/g)) assert(ids.includes(m[1]), 'Missing HTML ID ' + m[1]);
@@ -503,11 +606,11 @@ async function check(label, fn) {
     assert(Math.abs(t.impedance.re - .01) < 1e-12 && Math.abs(t.impedance.im) < 1e-12 && Math.abs(t.meanPower - 2e-4) < 1e-12);
     assert.equal(TE.terminalQuantities(dc).impedance, null); assert.equal(TE.terminalQuantities(dc).meanPower, dc.electricalPower);
     setView(); app.accept(ac);
-    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, '0.000° · mean absorbed power 0.2 mW');
+    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, '0.00° · mean absorbed power 200 µW');
     assert(el('spectrum').innerHTML.includes('<td>Current I · A</td><td>1ω</td>') && el('spectrum').innerHTML.includes('<td>Impedance Z = U/I · Ω</td>'));
     const v = model(); v.electrical = {...v.electrical, kind: 'voltage', value: {bias: .002, amplitude: 0, phase: 0}};
     app.accept(TE.run2D(v)); // voltage control: the current is the response
-    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, 'absorbed power U·I 0.4 mW');
+    assert.equal(el('iMetric').textContent, '200 mA'); assert.equal(el('iNote').textContent, 'absorbed power U·I 400 µW');
     const o = model(); o.electrical = {...o.electrical, kind: 'open_circuit'}; app.accept(TE.run2D(o));
     assert.equal(el('iNote').textContent, 'Open circuit: no terminal current or power');
     const report = acFiles.find(f => f.name === 'report.html').data;
@@ -616,7 +719,7 @@ async function check(label, fn) {
     vm.runInNewContext(fs.readFileSync(path.join(root, 'assets', 'startup.js'), 'utf8'), page);
     handlers.error({target: {tagName: 'SCRIPT', src: 'lib/catalog.js', hasAttribute: name => name === 'data-optional'}}); assert.equal(box.hidden, true);
     handlers.error({target: {tagName: 'SCRIPT', src: 'assets/core.js', hasAttribute: () => false}}); assert(!box.hidden && box.textContent.includes('assets/core.js'));
-    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js" data-optional>'));
+    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js?v=3.6" data-optional>'));
   });
   await check('The 3ω example uses 256 steps per period', async () => {
     const {app: a, el: e} = appContext({preset: 'layers'}); e('preset').value = 'nonlinear'; await a.loadPreset();
@@ -628,7 +731,7 @@ async function check(label, fn) {
     const c = a.config, r = context.TE.run2D(c), VH = context.TE.hallVoltage(r).value, ideal = -c.materials[0].hall * c.electrical.value.bias * c.magneticField / c.depth;
     close(VH, -42.186e-6, 1e-4, 'saved project V_H'); close(VH, ideal, .01, 'long bar −R_H·I·B/t'); // narrow contacts: 0.6 % below
     const {plus, minus} = context.TE.hallProbeNodes(c); assert(r.temperature[plus] === 300 && r.temperature[minus] === 300); // isothermal probes
-    a.accept(r); assert.equal(e('hMetric').textContent, '-0.042186 mV'); assert(e('hNote').textContent.includes('R_xy = -0.042186 Ω'));
+    a.accept(r); assert.equal(e('hMetric').textContent, '-42.19 µV'); assert(e('hNote').textContent.includes('R_xy = -42.19 mΩ'));
   });
   await check('The export menu closes after a choice, on Escape and on a click outside', () => {
     const {context, el: e} = appContext({preset: 'layers'}), menu = e('exportMenu'); menu.contains = () => false;
@@ -706,7 +809,7 @@ async function check(label, fn) {
     let c = a.read(); assert.deepEqual([c.mode, c.frequency, c.samples, c.maxPeriods], ['steady', 7, 256, 40]);
     e('frequency').value = ''; e('maxPeriods').value = '2'; c = a.read(); // invalid but inactive: model values kept
     assert.deepEqual([c.frequency, c.maxPeriods], [a.config.frequency, a.config.maxPeriods]);
-    e('amplitude').value = '0.1'; e('excitationMode').value = 'periodic'; // active again: strict
+    e('amplitude').value = '0.1'; e('excitationMode').value = 'periodic'; a.modes(); // active again: strict (the page calls modes() on change)
     assert.throws(() => a.read(), /frequency: value required/);
     a.config = {...a.config, mode: 'steady', frequency: 0}; a.fill(); // saved in DC by an earlier version
     assert.equal(Number(e('frequency').value), TE.default2D().frequency);
@@ -861,6 +964,65 @@ async function check(label, fn) {
     assert.equal(TE.validate2DConfig(inactive).length, 0); assert.deepEqual(TE.run2D(inactive).temperature, dc.temperature);
     const active = structuredClone(inactive); active.thermal.top.h = 10;
     assert(TE.validate2DConfig(active).some(i => i.path === 'thermal.top.value.bias'));
+  });
+  await check('Fifth review: inactive Bode fields, sweep validation, 0-node electrodes, material removal, flat-signal plots and magnetic cache', () => {
+    // Inactive Bode fields (probe X/Y for terminal quantities, dB reference in physical or complex mode) never block plots or exports.
+    const {context, app: a, el: e} = appContext({preset: 'layers', bodeQuantity: 'terminalVoltage', bodeHarmonic: '1', bodeRepresentation: 'complex',
+      bodeReference: 'current', bodeNormalization: 'raw', bodeScale: 'physical', bodeDb: '', bodeX: '', bodeY: '150', bodeFloor: '1e-12', bodeUnwrap: 'wrapped'});
+    a.sweepResult = structuredClone(sweep);
+    e('bodeQuantity').querySelector = () => ({});
+    a.drawBode();
+    assert(e('bodeMagnitude').innerHTML.includes('<svg') && !e('bodeCsv').disabled, e('bodeNote').textContent);
+    const opts = a.bodeOptions();
+    assert.deepEqual([opts.x, opts.y, opts.dbReference], [.5, .5, 1]);
+    TE.validateProjectBode(opts);
+    // Active Bode fields still require valid values.
+    e('bodeQuantity').value = 'temperature'; a.drawBode();
+    assert.equal(e('bodeNote').textContent, 'Complete Bode numerical inputs.');
+    // Editing a Bode number input after restoreBodeOptions clears cached dataset attributes.
+    a.restoreBodeOptions({...bode, x: 1 / 3, y: .5, representation: 'polar'});
+    e('bodeX').value = '33.3333333333';
+    e('bodeX').listeners.input({target: e('bodeX')});
+    assert.equal(e('bodeX').dataset.siNumber, undefined);
+    // Project validation enforces Bode and model-mode invariants.
+    assert.throws(() => TE.validateProjectBode({...bode, quantity: 'impedance', harmonic: 2}), /Impedance uses the fundamental/);
+    assert.throws(() => TE.validateProjectBode({...bode, reference: 'time', normalization: 'fundamental'}), /Time reference has no amplitude/);
+    assert.throws(() => TE.checkEditorModel({...model(false), mode: 'periodic'}), /Model mode disagrees/);
+    // A 0-node electrode reports only the node-coverage error, not a false near-insulator error.
+    const zeroNode = model(); zeroNode.electrical.sourceRange = [.11, .12];
+    const sourceIssues = TE.validate2DConfig(zeroNode).filter(i => i.path === 'electrical.sourceRange');
+    assert.equal(sourceIssues.length, 1); assert(/at least two boundary nodes/.test(sourceIssues[0].message));
+    // Sweep validation highlights sweep inputs, preserves warnings and avoids duplicating base model errors.
+    assert.deepEqual([...a.validationTargets('sweep.range')].map(x => x.id), ['sweepMin', 'sweepMax']);
+    assert.deepEqual([...a.validationTargets('sweep.points')].map(x => x.id), ['sweepPoints']);
+    // Removing a material card succeeds even when a field on the removed card was cleared.
+    a.config = {...model(), materials: [model().materials[0], {...model().materials[0], name: 'Second'}], materialMap: [0, 1, 0, 1]};
+    const card0 = {dataset: {material: '0'}, querySelectorAll: () => [{dataset: {key: 'name'}, value: 'Edited'}, {dataset: {key: 'rho'}, value: '2500', dataset: {key: 'rho'}}]},
+      card1 = {dataset: {material: '1'}, querySelectorAll: () => [{dataset: {key: 'rho'}, value: '', dataset: {key: 'rho'}}]};
+    context.document.querySelectorAll = sel => sel === '[data-material]' ? [card0, card1] : [];
+    a.removeMaterial(1);
+    assert.equal(a.config.materials.length, 1);
+    assert.equal(a.config.materials[0].name, 'Edited');
+    assert.equal(a.config.materials[0].rho, 2500);
+    // Flat signals with 1E-16 numerical noise do not magnify noise into 17-digit axis ticks.
+    const noisySvg = a.bodeSvg([{frequency: 1, magnitude: .01, phase: 0, unit: 'Ω'}, {frequency: 10, magnitude: .01 + 1e-18, phase: 0, unit: 'Ω'}], 'magnitude');
+    assert(noisySvg.includes('>0.01000</text>'), noisySvg);
+    // In a magnetic field, cached electrical solves run only one banded back-solve per call (for base), reusing unit.
+    const magSolver = TE.from2DConfig(hallBar({nx: 8, ny: 4, mat: {hall: -6e-4}})), T0 = magSolver.initial(), p0 = magSolver.properties(T0).p;
+    magSolver.electric(T0, p0, 0);
+    let backSolves = 0; const origSolve = magSolver.electricCache.solve;
+    magSolver.electricCache.solve = (rhs, fixed) => (backSolves++, origSolve(rhs, fixed));
+    magSolver.electric(T0.map(v => v + .1), p0, 0);
+    assert.equal(backSolves, 1);
+    // Anderson acceleration falls back to the Picard step if the extrapolated candidate violates a material law.
+    const lawSolver = TE.from2DConfig({...model(), materials: [{...model().materials[0], beta: -.01}]}),
+      n = lawSolver.mesh.n, step = Array(n).fill(300),
+      badNext = lawSolver.anderson([{T: Array(n).fill(350), f: Array(n).fill(20)}], Array(n).fill(390), Array(n).fill(400), step, 1, new Map());
+    assert.equal(badNext, step);
+    // Selected-time spatial profile draws the Hall probe markers like the Geometry and Results maps.
+    let markers = 0; a.hallMarkers = () => markers++; a.result = ac;
+    e('results').hidden = false; e('profileCard').hidden = false; e('profileField').value = 'temperature'; e('profileTime').value = '0';
+    a.drawProfile(); assert.equal(markers, 1);
   });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});
