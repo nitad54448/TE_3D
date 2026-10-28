@@ -461,7 +461,7 @@ async function check(label, fn) {
   });
   await check('Every example displays its own description in the help tooltip', async () => {
     const {app: a, el: e} = appContext({preset: 'layers'}), descriptions = new Set();
-    for (const p of ['dc', 'layers', 'spreading', 'joule', 'nonlinear', 'seebeck', 'module', 'rc', 'hall', 'hall-pge']) {
+    for (const p of ['dc', 'layers', 'spreading', 'joule', 'nonlinear', 'seebeck', 'module', 'rc', 'hall', 'hall-pge', 'film']) {
       e('preset').value = p; await a.loadPreset();
       assert.equal(e('preset').value, p, p);
       assert(a.config.description?.length > 0, p);
@@ -471,6 +471,27 @@ async function check(label, fn) {
       assert(!descriptions.has(a.config.description), p);
       descriptions.add(a.config.description);
     }
+  });
+  await check('Ge thin film: corner measurement recovers library resistivity, current reversal and thickness scaling', async () => {
+    const {app: a, el: e} = appContext({preset: 'layers'});
+    e('preset').value = 'film'; await a.loadPreset();
+    const c = a.config, record = JSON.parse(fs.readFileSync(path.join(root, 'lib', 'Ge_p_reference.json'), 'utf8'));
+    assert.equal(e('preset').value, 'film');
+    assert.deepEqual(JSON.parse(JSON.stringify(c.materials[0])), record.material);
+    assert.equal(TE.validate2DConfig(c).length, 0);
+    const r = TE.run2D(c), dv = TE.hallVoltage(r).value,
+      inferred = Math.PI / Math.log(2) * dv / r.current * c.depth;
+    assert(r.converged && dv > 0);
+    close(inferred, 1 / c.materials[0].sigma, .01, 'van der Pauw resistivity');
+    a.accept(r);
+    assert.equal(e('fourTerminalReadout').hidden, false);
+    assert(e('fourTerminalReadout').textContent.includes(a.si(dv, 'V')));
+    assert(e('fourTerminalReadout').textContent.includes(a.si(dv / r.current, 'Ω')));
+    assert.equal(e('hMetric').textContent, '—'); // zero-field voltage is not labelled Hall
+    const reversed = structuredClone(c); reversed.electrical.value.bias *= -1;
+    close(TE.hallVoltage(TE.run2D(reversed)).value, -dv, 1e-5, 'current reversal');
+    const thicker = structuredClone(c); thicker.depth *= 2;
+    close(TE.hallVoltage(TE.run2D(thicker)).value, dv / 2, 1e-5, 'thickness scaling');
   });
   await check('Joule heating with contacts: parabola without substrate, cosh fin profile with it', async () => {
     const {app: a2, el: e} = appContext({preset: 'layers'}); e('preset').value = 'dc'; await a2.loadPreset();
@@ -732,7 +753,7 @@ async function check(label, fn) {
     vm.runInNewContext(fs.readFileSync(path.join(root, 'assets', 'startup.js'), 'utf8'), page);
     handlers.error({target: {tagName: 'SCRIPT', src: 'lib/catalog.js', hasAttribute: name => name === 'data-optional'}}); assert.equal(box.hidden, true);
     handlers.error({target: {tagName: 'SCRIPT', src: 'assets/core.js', hasAttribute: () => false}}); assert(!box.hidden && box.textContent.includes('assets/core.js'));
-    assert(fs.readFileSync(path.join(root, 'index.html'), 'utf8').includes('<script src="lib/catalog.js?v=3.7" data-optional>'));
+    assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /<script src="lib\/catalog\.js\?v=[^"]+" data-optional>/);
   });
   await check('The 3ω example uses 256 steps per period', async () => {
     const {app: a, el: e} = appContext({preset: 'layers'}); e('preset').value = 'nonlinear'; await a.loadPreset();

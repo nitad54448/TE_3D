@@ -43,6 +43,12 @@
     // Hall voltage V(P+) − V(P−) and R_xy = V_H/I, only when the field acts transversely; otherwise the
     // probe difference is not a Hall voltage. Rounding noise (below 1E-12 of the terminal voltage) shows as zero.
     const hallInfo = TE.hallSummary(r);
+    app.$('fourTerminalReadout').hidden = periodic;
+    if (!periodic) {
+      const dv = TE.hallVoltage(r).value;
+      app.$('fourTerminalReadout').textContent = 'Voltage probes: ΔV = V(P+) − V(P−) = ' + app.si(dv, 'V') +
+        (!terminal.openCircuit && Math.abs(iz.re) > terminal.currentFloor ? ' · Four-terminal resistance R₄ = ΔV/I = ' + app.si(dv / iz.re, 'Ω') : ' · No current: resistance is undefined.');
+    }
     app.$('hLabel').textContent = 'HALL VOLTAGE · ' + (periodic ? '1ω' : 'DC');
     if (!hallInfo.active) {
       app.$('hMetric').textContent = '—';
@@ -111,6 +117,7 @@
     app.$('vLabel').textContent = 'TERMINAL VOLTAGE';
     app.$('iLabel').textContent = 'TERMINAL CURRENT';
     app.$('hLabel').textContent = 'HALL VOLTAGE';
+    app.$('fourTerminalReadout').hidden = true;
     for (const id of ['vMetric', 'iMetric', 'hMetric', 'tMetric', 'cycleMetric', 'scaleMin', 'scaleMax', 'surfaceMin', 'surfaceMax']) app.$(id).textContent = '—';
     for (const id of ['vPhase', 'iNote', 'hNote', 'diagnosticsNote', 'scaleUnit', 'surfaceUnit', 'probeChart', 'voltageChart', 'probeReadout']) app.$(id).textContent = '';
     app.$('errorMetric').textContent = 'No valid result';

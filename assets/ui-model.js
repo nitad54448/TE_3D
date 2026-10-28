@@ -540,6 +540,7 @@
   // is missing, invalid or unsuitable (legs need the right Seebeck sign, copper must conduct, plates
   // and gaps must insulate).
   app.libraryCopies = {
+    'Ge_p_reference.json': [m => m.sigma > 0 && m.hall > 0, {name: 'Ge-p, reference', rho: 5323, Cp: 310, k: 58, sigma: 8340.3, alpha: .0003282, beta: .00271, alphaSlope: 4.21e-7, hall: 7.43e-6, nernst: 3.08e-6, righiLeduc: 4.73e-5, magnetoresistance: .00134, color: '#b07a96'}],
     'Bi2Te3.json': [m => m.alpha > 0, {name: 'Bi2Te3 (p-type)', rho: 7740, Cp: 154.4, k: 1.6, sigma: 1.1e5, beta: 0, alpha: 2e-4, alphaSlope: 0, hall: 3.121e-07, nernst: 1.59e-06, righiLeduc: 0.013, magnetoresistance: 0.000307, color: '#73d8d0'}],
     'Bi2Te3_n_type.json': [m => m.alpha < 0, {name: 'Bi2Te3 n-type', rho: 7740, Cp: 154.4, k: 1.6, sigma: 1.1e5, beta: 0, alpha: -2e-4, alphaSlope: 0, hall: -3.121e-07, nernst: 1.59e-06, righiLeduc: -0.013, magnetoresistance: 0.000307, color: '#ae92d9'}],
     'Copper.json': [m => m.sigma > 1e6, {name: 'Copper', rho: 8960, Cp: 385, k: 401, sigma: 57478566.4581124, beta: 0.004176967424511028, alpha: 1.83e-6, alphaSlope: 0, hall: -5.17e-11, nernst: 0, righiLeduc: -0.002972, magnetoresistance: 8.83e-06, color: '#edaf6e'}],
@@ -707,6 +708,28 @@
       sweep: {enabled: false}
     };
   };
+  // A square van der Pauw geometry places all four terminals on the perimeter.
+  app.filmConfig = async function filmConfig() {
+    const {materials, source} = await app.loadLibraryMaterials(['Ge_p_reference.json']),
+      fixed = () => ({kind: 'temperature', value: {bias: 300, amplitude: 0, phase: 0}, h: 0});
+    return {
+      ...TE.default2D(),
+      description: 'Four-point resistivity of a Ge thin film: a homogeneous 4 mm square, 1 µm thick, using ' + source + '. ' +
+        'A 10 µA DC current enters the bottom-left corner and leaves the bottom-right corner through contacts each 1/38 of the side length. ' +
+        'Ideal voltage probes P+ and P− sample the top-left and top-right corners without drawing current. Bz = 0; all edges are held at 300 K to minimize thermal offsets. ' +
+        'This is a square van der Pauw measurement with perimeter contacts. In Results, read ΔV = V(P+) − V(P−) and R₄ = ΔV/I. ' +
+        'For this symmetric square with small corner contacts, sheet resistance R□ ≈ (π/ln 2)|R₄| = 4.5324|R₄|, and resistivity ρ ≈ R□ × depth. ' +
+        'The library conductivity predicts ρ ≈ 1.199 × 10⁻⁴ Ω m, R□ ≈ 119.9 Ω/sq, R₄ ≈ 26.45 Ω and ΔV ≈ 264.5 µV. ' +
+        'Finite contact size and mesh resolution introduce a small error. These formulas assume a homogeneous square and these corner positions; moving probes or changing the shape requires the corresponding geometry correction. ' +
+        'Try the potential map and current arrows, reverse the current, or vary thickness (ΔV scales inversely with thickness).',
+      mode: 'steady', nx: 38, ny: 38, lx: .004, ly: .004, depth: 1e-6, magneticField: 0,
+      materials, materialMap: Array(38 * 38).fill(0),
+      hallProbes: {plus: {x: 0, y: 1}, minus: {x: 1, y: 1}},
+      thermal: {left: fixed(), right: fixed(), bottom: fixed(), top: fixed()},
+      electrical: {kind: 'current', value: {bias: 1e-5, amplitude: 0, phase: 0}, sourceSide: 'bottom', sinkSide: 'bottom', sourceRange: [0, 1 / 38], sinkRange: [37 / 38, 1]},
+      sweep: {enabled: false}
+    };
+  };
   // The Example selector names the loaded example until the model changes; then it shows Custom
   // (a status-only entry). Choosing any example, including the same one, loads it again.
   app.showPreset = value => {
@@ -716,7 +739,7 @@
   app.loadPreset = async () => {
     const token = ++app.presetToken,
       p = app.$('preset').value,
-      build = {dc: app.jouleContactsConfig, module: app.moduleConfig, rc: app.rcConfig, 'hall-pge': app.hallPGeConfig}[p];
+      build = {dc: app.jouleContactsConfig, module: app.moduleConfig, rc: app.rcConfig, 'hall-pge': app.hallPGeConfig, film: app.filmConfig}[p];
     if (build) {
       try {
         const config = await build();

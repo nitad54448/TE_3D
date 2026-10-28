@@ -15,7 +15,7 @@ Serve the folder with any static web server and open `index.html`, for example `
 
 Opening `index.html` directly from disk also works. Browsers do not let a page opened from disk read `lib/*.json`, so the material library is then read from `lib/catalog.js`, the offline copy that `python lib/build_catalog.py` writes next to `lib/index.json`: rebuild it after editing material files.
 
-`index.html` loads its scripts and stylesheet with a version tag (`assets/core.js?v=3.7`), so a browser never combines a new page with cached old scripts. Raise the tag in `index.html` whenever you replace files in `assets/` or `lib/catalog.js`.
+`index.html` loads its scripts and stylesheet with a version tag (`assets/core.js?v=3.7.1`), so a browser never combines a new page with cached old scripts. Raise the tag in `index.html` whenever you replace files in `assets/` or `lib/catalog.js`.
 
 The interface has a dark and a light theme. It follows the system setting until you choose one with the header toggle, and remembers that choice.
 
@@ -28,6 +28,8 @@ The interface has a dark and a light theme. It follows the system setting until 
 5. **Run simulation**, then inspect **Results**.
 
 **Run simulation** and **Save project** also apply pending mesh changes. Remeshing resamples the material map, so inspect material regions afterwards. Invalid inputs are highlighted and listed above the tabs; Run and Save project stay disabled until they are corrected. Warnings that do not block a run, such as a periodic model without a thermal anchor, are listed in a separate box.
+
+The **Ge thin film ? four-point resistivity** example uses the library's `Ge_p_reference.json` in a 4 mm square, 1 ?m thick film at zero magnetic field. A 10 ?A DC current flows between small contacts at the bottom corners; ideal voltage probes sample the top corners. Results shows the probe voltage difference and four-terminal resistance R? = ?V/I. For this symmetric square van der Pauw arrangement with small corner contacts, sheet resistance R? ? (?/ln 2)|R?| and resistivity ? ? R? ? depth. The library values predict approximately 119.9 ?/sq and 1.199 ? 10?? ? m. Contact size and mesh resolution introduce a small error; changing the shape or probe positions requires the appropriate geometry correction. All four thermal edges are fixed at 300 K to minimize thermal offsets. See [NIST's van der Pauw measurement guide](https://www.nist.gov/pml/nanoscale-device-characterization-division/popular-links/hall-effect/hall-effect).
 
 ## Physical model
 
