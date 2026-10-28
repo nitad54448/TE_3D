@@ -162,11 +162,51 @@ h1 span {
   gap:20px;
   padding-bottom:20px;
 }
+.preset-control {
+  position:relative;
+  display:flex;
+  align-items:end;
+  gap:10px;
+  max-width:378px;
+  min-width:0;
+  flex:1;
+}
 .preset-label {
+  min-width:0;
   max-width:340px;
   flex:1;
   font:9px monospace;
   letter-spacing:1px;
+}
+.preset-help-button {
+  width:28px;
+  height:28px;
+  margin-bottom:4px;
+  padding:0;
+  border-radius:50%;
+  font-size:14px;
+  font-weight:600;
+}
+.preset-tooltip {
+  position:absolute;
+  top:100%;
+  left:0;
+  z-index:20;
+  width:min(560px, 90vw);
+  margin:0;
+  padding:14px 16px;
+  border:1px solid var(--control-border);
+  border-radius:6px;
+  background:var(--panel);
+  color:var(--text);
+  box-shadow:0 8px 24px #0003;
+  font-size:12px;
+  line-height:1.6;
+  visibility:hidden;
+}
+.preset-help:hover .preset-tooltip,
+.preset-help:focus-within .preset-tooltip {
+  visibility:visible;
 }
 .toolbar-buttons {
   display:flex;
@@ -681,7 +721,7 @@ footer {
     align-items:stretch;
     gap:14px;
   }
-  .preset-label {
+  .preset-control,.preset-label {
     max-width:none;
   }
   .toolbar-buttons {

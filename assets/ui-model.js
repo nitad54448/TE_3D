@@ -34,6 +34,7 @@
   app.fill = function fill() {
     app.$('modelNote').textContent = app.config.description ?? '';
     app.$('modelNote').hidden = !app.config.description;
+    app.$('presetHelp').hidden = !app.config.description;
     app.materialsForm();
     app.boundaryForm();
     const v = app.config.electrical.value;
