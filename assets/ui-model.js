@@ -749,7 +749,20 @@
     const c = TE.default2D(),
       fixed = T => ({kind: 'temperature', value: {bias: T, amplitude: 0, phase: 0}, h: 0}),
       flux = () => ({kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0});
-    if (p !== 'layers') delete c.description;
+    if (p !== 'layers') c.description = {
+      spreading: 'Current spreading: 0.1 A DC enters through the middle half of the left edge of a 2 mm by 1 mm sample, with copper on the left and BiTe on the right. ' +
+        'The left edge is held at 300 K, the right edge exchanges heat with a 300 K environment by convection, and the top and bottom are insulated. ' +
+        'Inspect the potential map and current arrows to see how current spreads from the narrow contact, and the temperature map for Joule and thermoelectric effects.',
+      joule: 'Homogeneous Joule heating: a zero-bias sinusoidal current of 1 A peak flows through a 1 mm by 1 mm resistive sample with constant electrical conductivity and zero Seebeck coefficient. ' +
+        'Both ends are held at 300 K and the top and bottom are insulated. Since heating is proportional to current squared, the temperature has a DC rise and a 2ω response. ' +
+        'Compare the DC and 2ω temperature maps and change the excitation frequency to explore thermal inertia.',
+      nonlinear: 'Nonlinear resistance: a zero-bias sinusoidal current of 0.2 A peak flows through a 1 mm by 1 mm resistive sample whose resistivity increases with temperature (β = 0.01 K⁻¹). ' +
+        'Both ends are held at 300 K and the top and bottom are insulated. Joule heating modulates the resistance at 2ω, mixing with the 1ω current to generate a 3ω terminal voltage. ' +
+        'Inspect the terminal harmonics and vary the current or frequency. This example uses 256 time steps per period to better resolve 3ω.',
+      seebeck: 'Open-circuit Seebeck voltage: a homogeneous 1 mm by 1 mm thermoelectric sample has its left edge held at 300 K and its right edge at 350 K, with insulated top and bottom edges. ' +
+        'No terminal current flows. The Seebeck coefficient is 200 µV/K, giving a source-minus-sink voltage of 10 mV for this 50 K temperature difference with ideal zero-Seebeck leads. ' +
+        'Inspect the temperature and potential maps, then reverse the temperature difference to reverse the voltage.'
+    }[p];
     app.config = c;
     app.selected = 0;
     if (p === 'spreading') {

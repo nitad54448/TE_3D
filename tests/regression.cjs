@@ -455,8 +455,21 @@ async function check(label, fn) {
     for (const p of ['spreading', 'joule', 'nonlinear', 'seebeck']) {
       e('preset').value = p; await a2.loadPreset();
       const m = a2.config;
-      assert.equal(m.description, undefined, p); assert.equal(m.thermal.left.kind, 'temperature', p); assert.equal(TE.validate2DConfig(m).length, 0, p);
+      assert(m.description?.length > 0, p); assert.equal(m.thermal.left.kind, 'temperature', p); assert.equal(TE.validate2DConfig(m).length, 0, p);
       assert.equal(m.mode, ['joule', 'nonlinear'].includes(p) ? 'periodic' : 'steady', p);
+    }
+  });
+  await check('Every example displays its own description in the help tooltip', async () => {
+    const {app: a, el: e} = appContext({preset: 'layers'}), descriptions = new Set();
+    for (const p of ['dc', 'layers', 'spreading', 'joule', 'nonlinear', 'seebeck', 'module', 'rc', 'hall', 'hall-pge']) {
+      e('preset').value = p; await a.loadPreset();
+      assert.equal(e('preset').value, p, p);
+      assert(a.config.description?.length > 0, p);
+      assert.equal(e('modelNote').textContent, a.config.description, p);
+      assert.equal(e('modelNote').hidden, false, p);
+      assert.equal(e('presetHelp').hidden, false, p);
+      assert(!descriptions.has(a.config.description), p);
+      descriptions.add(a.config.description);
     }
   });
   await check('Joule heating with contacts: parabola without substrate, cosh fin profile with it', async () => {
