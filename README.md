@@ -15,9 +15,11 @@ Serve the folder with any static web server and open `index.html`, for example `
 
 Opening `index.html` directly from disk also works. Browsers do not let a page opened from disk read `lib/*.json`, so the material library is then read from `lib/catalog.js`, the offline copy that `python lib/build_catalog.py` writes next to `lib/index.json`: rebuild it after editing material files.
 
-`index.html` loads its scripts and stylesheet with a version tag (`assets/core.js?v=3.8.0`), so a browser never combines a new page with cached old scripts. Raise the tag in `index.html` whenever you replace files in `assets/` or `lib/catalog.js`.
+`index.html` loads its scripts and stylesheet with a version tag (`assets/core.js?v=3.9.2`), so a browser never combines a new page with cached old scripts. Raise the tag in `index.html` whenever you replace files in `assets/` or `lib/catalog.js`.
 
 The interface has a dark and a light theme. It follows the system setting until you choose one with the header toggle, and remembers that choice.
+
+The workflow rail on the left lists the five steps with their current settings, and keeps **Run simulation** in reach; a *Changes not applied* flag appears there while a mesh edit is pending. The status bar at the bottom stays visible on every tab and shows the run state, the last message, progress and elapsed time. The **Log** button in the status bar (or L) opens the session log and the project history. The log records what the application reported and decided, with level and time; the history records your parameter edits, example loads, mesh changes and run outcomes. Both are append-only, capped at 500 lines, and can be copied or exported as text. A **?** next to a label explains it in one sentence. Shortcuts: Alt+1…5 switch step, Ctrl+Enter runs, L toggles the log, T toggles the theme, ? lists them.
 
 ## Workflow
 
