@@ -11,6 +11,11 @@
       TE.assert = (ok, message) => {
         if (!ok) throw new Error(message);
       };
+      // Largest meshes, in nodes (Nx + 1)(Ny + 1). A steady run solves one state and stays within seconds
+      // at 25 000 nodes. A periodic run solves and retains every time step of every cycle, so its run time
+      // and its stored data set a lower limit; the retained-data estimate may reject a mesh below it.
+      TE.nodeLimits = Object.freeze({steady: 25000, periodic: 6400});
+      TE.nodeLimit = mode => mode === 'periodic' ? TE.nodeLimits.periodic : TE.nodeLimits.steady;
       TE.phaseRadians = degrees => {
         TE.assert(Number.isFinite(degrees), 'Phase must be finite.');
         return degrees % 360 * Math.PI / 180;
@@ -205,7 +210,7 @@
           materialMap
         }) {
           TE.assert(Number.isInteger(nx) && Number.isInteger(ny) && nx >= 2 && ny >= 1, 'Use at least 2 cells along x and 1 along y.');
-          TE.assert((nx + 1) * (ny + 1) <= 1600, 'Maximum 1600 nodes in this browser version.');
+          TE.assert((nx + 1) * (ny + 1) <= TE.nodeLimits.steady, `Maximum ${TE.nodeLimits.steady} nodes.`);
           TE.assert([lx, ly, depth].every(v => Number.isFinite(v) && v > 0), 'Dimensions and depth must be positive.');
           Object.assign(this, {
             nx,
@@ -471,7 +476,7 @@
       // Direct solver for the non-symmetric systems of the magnetic model (Hall, Righi–Leduc).
       // Free nodes are numbered along the shorter mesh direction, so a cell couples rows at most
       // min(nx, ny) + 2 apart. Banded Gaussian elimination with partial pivoting then costs about
-      // n·w² operations (a few million at the 1600-node cap) and is exact at any Hall angle.
+      // n·w² operations (a few hundred million at the 25 000-node limit of steady runs) and is exact at any Hall angle.
       const layouts = new WeakMap();
       function bandLayout(mesh, fixed) {
         let cache = layouts.get(mesh);
@@ -1585,10 +1590,12 @@
         const field = c.magneticField === undefined ? 0 : c.magneticField;
         if (finite(field, 'magneticField') && Math.abs(field) > 100) add('magneticField', 'Use a field between −100 and 100 T.');
         const nxOK = integer(c.nx, 'nx', 2),
-          nyOK = integer(c.ny, 'ny', 1);
-        if (nxOK && nyOK && (c.nx + 1) * (c.ny + 1) > 1600) {
-          add('nx', 'The mesh may contain at most 1600 nodes.');
-          add('ny', 'Reduce Nx or Ny to stay at or below 1600 nodes.');
+          nyOK = integer(c.ny, 'ny', 1),
+          nodeLimit = TE.nodeLimit(c.mode);
+        if (nxOK && nyOK && (c.nx + 1) * (c.ny + 1) > nodeLimit) {
+          const kind = periodic ? 'A periodic (AC) model' : 'The mesh';
+          add('nx', `${kind} may contain at most ${nodeLimit} nodes; this mesh has ${(c.nx + 1) * (c.ny + 1)}.`);
+          add('ny', `Reduce Nx or Ny to stay at or below ${nodeLimit} nodes.`);
         }
         const lxOK = positive(c.lx, 'lx'),
           lyOK = positive(c.ly, 'ly'),
@@ -1759,7 +1766,7 @@
           }
         });
         // With an invalid Nx or Ny (already reported), the map cannot be checked against them: no second error.
-        const meshOK = nxOK && nyOK && (c.nx + 1) * (c.ny + 1) <= 1600;
+        const meshOK = nxOK && nyOK && (c.nx + 1) * (c.ny + 1) <= TE.nodeLimits.steady;
         if (!Array.isArray(c.materialMap)) add('materialMap', 'Material map must have exactly Nx × Ny cells.');else if (!meshOK) {} else if (c.materialMap.length !== c.nx * c.ny) add('materialMap', 'Material map must have exactly Nx × Ny cells.');else if (!Array.isArray(mats) || c.materialMap.some(id => !Number.isInteger(id) || id < 0 || id >= mats.length)) add('materialMap', 'Every cell must reference an existing material.');
         const e = c.electrical,
           contacts = {};
@@ -1774,7 +1781,7 @@
             if (!sideOK) add('electrical.' + name + 'Side', 'Select a valid boundary side.');
             const rangeOK = Array.isArray(range) && range.length === 2 && range.every(v => typeof v === 'number' && Number.isFinite(v)) && range[0] >= 0 && range[1] <= 1 && range[0] < range[1];
             if (!rangeOK) add(p, 'Electrode range must satisfy 0% ≤ start < end ≤ 100%.');
-            if (sideOK && rangeOK && nxOK && nyOK && (c.nx + 1) * (c.ny + 1) <= 1600) {
+            if (sideOK && rangeOK && meshOK) {
               const count = ['left', 'right'].includes(side) ? c.ny : c.nx,
                 ids = [];
               for (let k = 0; k <= count; k++) if (TE.onElectrode(k / count, range)) ids.push(side === 'left' ? k * (c.nx + 1) : side === 'right' ? k * (c.nx + 1) + c.nx : side === 'bottom' ? k : c.ny * (c.nx + 1) + k);
@@ -2125,7 +2132,7 @@
       }) => {
         // Validate before allocating or mutating the displayed model.
         TE.assert(Number.isInteger(nx) && Number.isInteger(ny) && nx >= 2 && ny >= 1, 'Element counts must be integers: Nx ≥ 2 and Ny ≥ 1.');
-        TE.assert((nx + 1) * (ny + 1) <= 1600, `Requested mesh: ${nx * ny} elements, ${(nx + 1) * (ny + 1)} nodes. The browser limit is 1600 nodes; reduce Nx or Ny.`);
+        TE.assert((nx + 1) * (ny + 1) <= TE.nodeLimits.steady, `Requested mesh: ${nx * ny} elements, ${(nx + 1) * (ny + 1)} nodes. The limit is ${TE.nodeLimits.steady} nodes; reduce Nx or Ny.`);
         TE.assert([lx, ly, depth].every(v => Number.isFinite(v) && v > 0), 'Dimensions and depth must be positive.');
         const next = {
           ...config,

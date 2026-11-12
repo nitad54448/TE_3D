@@ -116,11 +116,14 @@
       w,
       h
     } = f;
+    // Mesh lines are drawn while cells are at least 5 px wide; on finer meshes they would hide the colours.
+    const lines = Math.min(w / c.nx, h / c.ny) >= 5;
     for (let j = 0; j < c.ny; j++) for (let i = 0; i < c.nx; i++) {
       ctx.fillStyle = TE.materialColor(c.materials[c.materialMap[j * c.nx + i]]?.color);
       ctx.globalAlpha = .75;
-      ctx.fillRect(left + i * w / c.nx, top + (c.ny - 1 - j) * h / c.ny, w / c.nx, h / c.ny);
+      ctx.fillRect(left + i * w / c.nx, top + (c.ny - 1 - j) * h / c.ny, w / c.nx + (lines ? 0 : .4), h / c.ny + (lines ? 0 : .4));
       ctx.globalAlpha = 1;
+      if (!lines) continue;
       ctx.strokeStyle = colors.mesh;
       ctx.strokeRect(left + i * w / c.nx, top + (c.ny - 1 - j) * h / c.ny, w / c.nx, h / c.ny);
     }

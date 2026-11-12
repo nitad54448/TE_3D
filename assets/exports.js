@@ -31,10 +31,16 @@
     const x = 70 + (400 - w) / 2,
       y = 35 + (150 - h) / 2;
     let b = `<text x="15" y="18" font-size="12" fill="#17394b">${esc(geometry ? 'Material map' : `${fields.find(f => f[0] === key)[1]} · ${n ? n + 'ω' : 'DC'} · ${n ? representation : key === 'J' ? 'magnitude' : 'signed mean'} · ${isPhase ? '°' : fields.find(f => f[0] === key)[2]}`)}</text>`;
-    for (let j = 0; j < c.ny; j++) for (let i = 0; i < c.nx; i++) {
-      const k = j * c.nx + i,
-        fill = geometry ? TE.materialColor(c.materials[c.materialMap[k]].color) : values[k] === null ? '#56616d' : rgb(hi === lo ? .5 : (values[k] - lo) / (hi - lo));
-      b += `<rect x="${x + i * w / c.nx}" y="${y + (c.ny - j - 1) * h / c.ny}" width="${w / c.nx + .03}" height="${h / c.ny + .03}" fill="${fill}"/>`;
+    // One rectangle per run of equal colour along a row, with coordinates to 0.01 unit: large meshes
+    // would otherwise make every figure several megabytes.
+    const px = v => String(Math.round(v * 100) / 100),
+      fillOf = k => geometry ? TE.materialColor(c.materials[c.materialMap[k]].color) : values[k] === null ? '#56616d' : rgb(hi === lo ? .5 : (values[k] - lo) / (hi - lo));
+    for (let j = 0; j < c.ny; j++) for (let i = 0; i < c.nx;) {
+      const fill = fillOf(j * c.nx + i);
+      let end = i + 1;
+      while (end < c.nx && fillOf(j * c.nx + end) === fill) end++;
+      b += `<rect x="${px(x + i * w / c.nx)}" y="${px(y + (c.ny - j - 1) * h / c.ny)}" width="${px((end - i) * w / c.nx + .03)}" height="${px(h / c.ny + .03)}" fill="${fill}"/>`;
+      i = end;
     }
     b += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#555" stroke-width=".5"/><text x="${x}" y="${y + h + 15}" font-size="10">0</text><text x="${x + w}" y="${y + h + 15}" font-size="10" text-anchor="end">${esc(fmt(c.lx * 1000))} mm · x</text><text x="8" y="${y + 7}" font-size="10">${esc(fmt(c.ly * 1000))} mm</text><text x="8" y="${y + 20}" font-size="10">y ↑</text>`;
     for (const name of ['source', 'sink']) {

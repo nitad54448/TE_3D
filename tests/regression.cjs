@@ -538,7 +538,7 @@ async function check(label, fn) {
     try { assert.throws(() => solver.electric(T, solver.properties(T).p, 0), /^Error: Electrical solve failed .*Move the electrode onto a conductor/); }
     finally { TE.cellSystem = cellSystem; }
     // An invalid Nx or Ny is reported once, without a second error about the material map.
-    for (const [nx, ny] of [[1, 1], [2, 0], [50, 50]]) {
+    for (const [nx, ny] of [[1, 1], [2, 0], [200, 200]]) {
       const paths = TE.validate2DConfig({...model(), nx, ny}).map(i => i.path);
       assert(paths.some(p => p === 'nx' || p === 'ny') && !paths.includes('materialMap'), `${nx} × ${ny}: ${paths}`);
     }
@@ -1088,6 +1088,33 @@ async function check(label, fn) {
     drift.maxPeriods = 3; let last = null;
     assert.throws(() => TE.run2D(drift, () => {}, r => last = r), e => e.unconverged);
     close(last.diagnostics.cycleEnergyResidualWatts, -last.diagnostics.cycleMeanPowerWatts, 1e-6, 'stored Joule heat');
+  });
+  await check('Node limits: 25 000 for steady models, 6400 for periodic ones and sweeps', () => {
+    assert.deepEqual({...TE.nodeLimits}, {steady: 25000, periodic: 6400});
+    const sized = (nx, ny, periodic = false) => ({...model(periodic), nx, ny, materialMap: Array(nx * ny).fill(0)}),
+      meshIssues = c => TE.validate2DConfig(c).filter(i => i.path === 'nx' || i.path === 'ny');
+    assert.equal(TE.validate2DConfig(sized(192, 128)).length, 0); // 24 897 nodes, steady
+    assert(meshIssues(sized(200, 200)).some(i => /at most 25000 nodes; this mesh has 40401/.test(i.message)));
+    assert.equal(meshIssues(sized(96, 64, true)).length, 0); // 6305 nodes, periodic
+    const ac = meshIssues(sized(100, 64, true)); // 6565 nodes: valid for DC, too large for AC
+    assert(ac.some(i => /A periodic \(AC\) model may contain at most 6400 nodes; this mesh has 6565/.test(i.message)));
+    assert.equal(TE.validate2DConfig(sized(100, 64)).length, 0);
+    assert(!TE.validate2DConfig(sized(100, 64, true)).some(i => i.path === 'materialMap')); // the map itself is fine
+    // A sweep is periodic: the same mesh is rejected for every frequency.
+    assert.throws(() => TE.validateSweep({...sized(100, 64, true), sweep: {min: 1, max: 10, points: 2, spacing: 'log'}}), /at most 6400 nodes/);
+    // The retained-data estimate still applies below the node limit.
+    assert(TE.validate2DConfig({...sized(96, 64, true), samples: 256}).some(i => i.path === 'samples' && /256 MiB/.test(i.message)));
+    // Remeshing and the mesh itself accept the steady limit and no more.
+    assert.equal(TE.remeshConfig(model(), {nx: 192, ny: 128, lx: .003, ly: .002, depth: .001}).materialMap.length, 192 * 128);
+    assert.throws(() => TE.remeshConfig(model(), {nx: 200, ny: 200, lx: .003, ly: .002, depth: .001}), /limit is 25000 nodes/);
+    assert.throws(() => new TE.Mesh2D({nx: 200, ny: 200, lx: 1, ly: 1}), /Maximum 25000 nodes/);
+    // A steady run well above the former limit: 9801 nodes, with and without the banded solver of a field.
+    const big = sized(120, 80), plain = TE.run2D(big);
+    assert(Math.abs(plain.energyResidual) < 1e-9 * Math.max(1, Math.abs(plain.electricalPower) * 1e6) && plain.temperature.length === 9801);
+    big.magneticField = 1; big.lx = .008; big.materials = [{...big.materials[0], sigma: 160, hall: -6.24e-4}];
+    big.electrical.value = {bias: 1e-3, amplitude: 0, phase: 0};
+    const hall = TE.run2D(big), probe = 60; // bottom middle to top middle
+    close(hall.voltage[probe] - hall.voltage[80 * 121 + probe], -6.24e-4 * 1e-3 * 1 / 1e-3, 1e-3, 'V_H = R_H·I·B/t on 120 × 80');
   });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

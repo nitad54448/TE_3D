@@ -279,7 +279,7 @@
       try {
         let draft = app.read();
         const g = app.geometryInput();
-        if (Number.isInteger(g.nx) && Number.isInteger(g.ny) && g.nx >= 2 && g.ny >= 1 && (g.nx + 1) * (g.ny + 1) <= 1600) draft = TE.remeshConfig(draft, {
+        if (Number.isInteger(g.nx) && Number.isInteger(g.ny) && g.nx >= 2 && g.ny >= 1 && (g.nx + 1) * (g.ny + 1) <= TE.nodeLimits.steady) draft = TE.remeshConfig(draft, {
           ...g,
           lx: app.config.lx,
           ly: app.config.ly,
@@ -368,7 +368,7 @@
       const g = app.geometryInput(),
         valid = Number.isInteger(g.nx) && Number.isInteger(g.ny) && g.nx >= 2 && g.ny >= 1;
       app.$('meshSummary').textContent = valid ? `${g.nx} × ${g.ny} = ${g.nx * g.ny} elements / ${(g.nx + 1) * (g.ny + 1)} nodes` : 'Enter whole-number counts: Nx ≥ 2 and Ny ≥ 1.';
-      app.$('meshPending').textContent = valid && (g.nx + 1) * (g.ny + 1) > 1600 ? 'Too large: maximum 1600 nodes.' : app.meshChanged(g) ? 'Pending change — Apply mesh, Run simulation or Save project will apply it.' : 'Mesh is up to date.';
+      app.$('meshPending').textContent = valid && (g.nx + 1) * (g.ny + 1) > TE.nodeLimits.steady ? `Too large: maximum ${TE.nodeLimits.steady} nodes.` : app.meshChanged(g) ? 'Pending change — Apply mesh, Run simulation or Save project will apply it.' : 'Mesh is up to date.';
     } catch {
       app.$('meshSummary').textContent = 'Enter valid dimensions and element counts.';
       app.$('meshPending').textContent = '';
