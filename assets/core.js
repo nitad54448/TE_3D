@@ -642,20 +642,16 @@
       }
       // The one explanation of a failed electrical solve, with or without magnetic field.
       TE.electricalSolveError = error => new Error(`Electrical solve failed (${error.message}) Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E14), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.`);
-      // Second-law limit of the magnetic model. With the in-plane tensors written as complex numbers
-      // (R ↔ i): σ̂ = 1/(ρ′ + i·R_H·B), ε = α + i·N·B, Peltier tensor T·ε (Onsager), w = σ̂·ε. Entropy
-      // production stays nonnegative only if κ ≥ T·[(Re w)²/Re σ̂ − Re(w·ε)]. Returns that ratio, the
-      // Ettingshausen figure of merit: σ′N²B²T/κ without Hall and Seebeck terms, 0 at B = 0. At 1 or more
-      // the short-circuit thermal conductivity is negative: heat would diffuse up the gradient.
-      TE.ettingshausenMerit = (rhoE, alpha, kappa, m, T, B) => {
+      // Second-law limit of the magnetic model. With the Peltier tensor T·(α + N·B·R) (Onsager), the entropy
+      // production is T·ṡ = ρ′|J|² + 2·N·B·J·(R∇T) + κ|∇T|²/T: the Seebeck and Hall terms cancel. It stays
+      // nonnegative for every J and ∇T only while the Ettingshausen figure of merit
+      // Z_E·T = N²B²T/(ρ′κ) = σ′N²B²T/κ is below 1 (ρ′ = ρₑ(1 + m·B²)). Returns Z_E·T, 0 at B = 0.
+      TE.ettingshausenMerit = (rhoE, kappa, m, T, B) => {
         if (!B || !m.nernst) return 0;
-        const rho = rhoE * (1 + (m.magnetoresistance ?? 0) * B * B), h = (m.hall ?? 0) * B, n = m.nernst * B,
-          d = rho * rho + h * h, sr = rho / d, si = -h / d, // σ̂
-          wr = sr * alpha - si * n, wi = sr * n + si * alpha, // w = σ̂·ε
-          wer = wr * alpha - wi * n; // Re(w·ε)
-        return T * (wr * wr / sr - wer) / kappa;
+        const n = m.nernst * B;
+        return T * n * n / (rhoE * (1 + (m.magnetoresistance ?? 0) * B * B) * kappa);
       };
-      TE.ettingshausenMessage = merit => `At ${merit.T.toPrecision(4)} K, ${merit.name} has an Ettingshausen figure of merit σN²B²T/κ = ${merit.value.toPrecision(3)} ≥ 1: its thermal conductivity at zero electric field is negative, so the state violates the second law and is not physical. Reduce N, Bz or the heating.`;
+      TE.ettingshausenMessage = merit => `At ${merit.T.toPrecision(4)} K, ${merit.name} has an Ettingshausen figure of merit σN²B²T/κ = ${merit.value.toPrecision(3)} ≥ 1: entropy production is no longer positive (the Nernst-driven current carries heat up the gradient), so the state violates the second law and is not physical. Reduce N, Bz or the heating.`;
       class Solver2D {
         constructor(mesh, materials, boundaries, electrical, {
           magneticField = 0
@@ -1204,7 +1200,7 @@
           this.mesh.cells.forEach(cell => {
             const a = this.materials[cell.m];
             for (const i of cell.nodes) {
-              const value = TE.ettingshausenMerit(a.electricalResistivity(T[i]), a.seebeck(T[i]), a.thermalConductivity(T[i]), a, T[i], this.B);
+              const value = TE.ettingshausenMerit(a.electricalResistivity(T[i]), a.thermalConductivity(T[i]), a, T[i], this.B);
               if (value > best.value) best = {value, T: T[i], name: a.name};
             }
           });
@@ -1257,7 +1253,7 @@
             return step;
           }
         }
-        snapshot(T, t = 0, steady = false) {
+        snapshot(T, t = 0) {
           const m = this.mesh,
             b = this.balance(T, t),
             Jx = [],
@@ -1308,7 +1304,9 @@
             current: b.current,
             terminalVoltage: b.terminalVoltage,
             electricalPower,
-            energyResidual: steady ? heatOut - electricalPower : null,
+            // Heat leaving through the boundaries minus absorbed electrical power U·I: zero in a steady state.
+            // In a periodic run it is the rate of change of the stored heat, and only its cycle mean vanishes.
+            energyResidual: heatOut - electricalPower,
             freeResidualWatts: Math.max(0, ...res.filter((_, i) => !bc.fixed.has(i)).map(Math.abs))
           };
         }
@@ -1320,7 +1318,7 @@
             initial: this.initial(options.T0)
           });
           return {
-            ...this.snapshot(T, 0, true),
+            ...this.snapshot(T, 0),
             diagnostics: {
               ...this.lastNonlinearDiagnostics
             },
@@ -1392,9 +1390,16 @@
               terminalVoltage: terminal.terminalVoltage
             };
             // Build retained fields directly; avoid a second full array of snapshot objects.
+            // Cycle energy balance: in a periodic state the stored heat returns to its starting value, so the
+            // cycle means of the boundary heat outflow and of U·I are equal. Their difference is the mean rate
+            // of heat storage: an independent check of periodicity (thermal drift, missing anchor).
+            let cycleEnergyResidual = 0,
+              cycleMeanPower = 0;
             for (let i = 0; i < samples; i++) {
               const record = this.snapshot(history[i], ((cycle - 1) * samples + i) * dt);
               for (const key of ['voltage', 'Jx', 'Jy', 'qx', 'qy']) traces[key].push(record[key]);
+              cycleEnergyResidual += record.energyResidual / samples;
+              cycleMeanPower += record.electricalPower / samples;
             }
             const harmonics = {};
             for (const [key, value] of Object.entries(traces)) harmonics[key] = TE.extractHarmonics(value, 3);
@@ -1419,6 +1424,8 @@
                 terminalHarmonicError: Number.isFinite(harmonicError) ? harmonicError : null,
                 heatResidualNormalized: maxHeatResidual,
                 heatResidualWatts: maxHeatResidualWatts,
+                cycleEnergyResidualWatts: cycleEnergyResidual,
+                cycleMeanPowerWatts: cycleMeanPower,
                 harmonicVoltageAtol,
                 harmonicCurrentAtol,
                 harmonicRtol,
@@ -1738,16 +1745,15 @@
           }
           // Second law in the field: the Ettingshausen figure of merit must stay below 1 (TE.ettingshausenMerit).
           if (typeof m.nernst === 'number' && m.nernst !== 0 && Number.isFinite(field) && field !== 0 && !errors.some(e => e.path.startsWith(p + '.'))) for (const T of probeTemperatures) {
-            const sigma = typeof m.sigma === 'number' ? {type: 'inverseLinear', value: m.sigma, slope: m.beta ?? 0, reference: 300} : m.sigma,
-              alpha = typeof m.alpha === 'number' ? {type: 'linear', value: m.alpha, slope: m.alphaSlope ?? 0, reference: 300} : m.alpha;
+            const sigma = typeof m.sigma === 'number' ? {type: 'inverseLinear', value: m.sigma, slope: m.beta ?? 0, reference: 300} : m.sigma;
             let merit;
             try {
-              merit = TE.ettingshausenMerit(1 / TE.law(sigma, T), TE.law(alpha, T), TE.law(m.k, T), m, T, field);
+              merit = TE.ettingshausenMerit(1 / TE.law(sigma, T), TE.law(m.k, T), m, T, field);
             } catch {
               continue;
             }
             if (!(merit < 1)) {
-              add(p + '.nernst', `With Bz = ${field} T, the Ettingshausen figure of merit σN²B²T/κ is ${merit.toPrecision(3)} at ${T.toPrecision(4)} K: it must stay below 1, or the short-circuit thermal conductivity is negative and no stable state exists (second law). Reduce N or Bz.`);
+              add(p + '.nernst', `With Bz = ${field} T, the Ettingshausen figure of merit σN²B²T/κ is ${merit.toPrecision(3)} at ${T.toPrecision(4)} K: it must stay below 1, or entropy production is no longer positive and no stable state exists (second law). Reduce N or Bz.`);
               break;
             }
           }
@@ -1826,10 +1832,41 @@
       TE.hasThermalAnchor = c => Object.values(c?.thermal ?? {}).some(b => b?.kind === 'temperature' || b?.kind === 'convection' && Number.isFinite(b.h) && b.h > 0);
       TE.anchorHint = 'No thermal anchor fixes the mean temperature, so any net heating makes it drift every cycle and no periodic state is reached: fix a temperature on one edge or use convection with h > 0.';
       // Non-blocking advice: the model is valid and runs, but probably not as intended.
-      TE.modelWarnings = c => c && c.mode === 'periodic' && c.thermal && typeof c.thermal === 'object' && !TE.hasThermalAnchor(c) ? [{
-        path: 'thermal',
-        message: TE.anchorHint
-      }] : [];
+      // Weak-field range of the constant magnetic coefficients: R_H, N and S are first-order terms in the
+      // Hall angle μ_H·B = σ|R_H|·B and m·B² a second-order one, so beyond these values the neglected
+      // field dependence of the coefficients (and of α and κ) is no longer small.
+      TE.weakFieldLimits = Object.freeze({hallAngle: .3, magnetoresistance: .1});
+      TE.fieldWarnings = c => {
+        const B = c?.magneticField;
+        if (typeof B !== 'number' || !Number.isFinite(B) || B === 0 || !Array.isArray(c.materials) || !Array.isArray(c.materialMap)) return [];
+        const used = new Set(c.materialMap),
+          number = v => typeof v === 'number' && Number.isFinite(v) ? v : 0,
+          out = [];
+        c.materials.forEach((m, i) => {
+          if (!used.has(i) || !m || typeof m !== 'object') return;
+          let sigma = 0;
+          try {
+            sigma = number(typeof m.sigma === 'number' ? m.sigma : TE.law(m.sigma, 300));
+          } catch {}
+          const angle = sigma * Math.abs(number(m.hall) * B),
+            mr = Math.abs(number(m.magnetoresistance)) * B * B,
+            over = [];
+          if (angle > TE.weakFieldLimits.hallAngle) over.push(`Hall angle σ|R_H·Bz| = ${angle.toPrecision(2)} (weak-field range: up to ${TE.weakFieldLimits.hallAngle})`);
+          if (mr > TE.weakFieldLimits.magnetoresistance) over.push(`magnetoresistance m·Bz² = ${mr.toPrecision(2)} (weak-field range: up to ${TE.weakFieldLimits.magnetoresistance})`);
+          if (over.length) out.push({
+            path: 'magneticField',
+            message: `${typeof m.name === 'string' && m.name ? m.name : 'Material ' + i}: ${over.join('; ')}. The constant coefficients R_H, N, S and m describe weak fields only: at this field the real coefficients depend on Bz, and so do α and κ, so expect errors of the order of these values. Reduce Bz or enter coefficients measured at this field.`
+          });
+        });
+        return out;
+      };
+      TE.modelWarnings = c => !c || typeof c !== 'object' ? [] : [
+        ...(c.mode === 'periodic' && c.thermal && typeof c.thermal === 'object' && !TE.hasThermalAnchor(c) ? [{
+          path: 'thermal',
+          message: TE.anchorHint
+        }] : []),
+        ...TE.fieldWarnings(c)
+      ];
       TE.assertValid2DConfig = c => {
         const issues = TE.validate2DConfig(c);
         if (issues.length) {
@@ -2489,7 +2526,7 @@
         "html": "<h3>DC and harmonic excitation</h3><p>DC solves the stationary system with ∂T/∂t = 0, using only DC biases. Periodic inputs use b + A cos(2πft + φ); φ is in degrees in the editor. The nonlinear time-domain solution generates harmonics:<br>u(t) = U₀ + Re[Σ Uₙ exp(inωt)], n = 1,2,3.<br>Coefficients are peak phasors, not RMS. Instantaneous spatial profiles use stored time samples, including all resolved harmonics; they are not reconstructed from only 1ω–3ω.</p><h3>Discretization and iteration</h3><p>Each rectangular cell contributes four half-face links. For a link a→b of length L and half-face area A:<br>g = A/[L mean(ρₑ(Ta),ρₑ(Tb))]<br>Iab = g[Va − Vb − αmean(Tb − Ta)]<br>Qab = αmean(Ta + Tb)Iab/2 − kmean A(Tb − Ta)/L.<br>Electrical work Iab(Va − Vb) is shared between the two nodes. Cell heat capacity is split among its four corners. Coupled equations are iterated with Picard, undamped first and damped when an undamped step fails or stops contracting; Peltier cooling at a node, a source proportional to −T, is treated implicitly on the matrix diagonal. The terminal current is I = Σ Iab(ua − ub) over all links, where u is the unit solution (u = 1 on the source, 0 on the sink); this weighting is exact for any link currents that satisfy Kirchhoff's law. Symmetric linear systems use warm-started, Jacobi-preconditioned conjugate gradients; the non-symmetric systems of the magnetic field use banded LU. BDF2 advances periodic runs after one backward-Euler startup step. Cycle convergence checks successive temperature histories and terminal DC/1ω–3ω phasors; the voltage tolerance follows the temperature tolerance through the largest Seebeck coefficient. When the cycle-to-cycle drift decays geometrically along a stable direction, the cycle start is extrapolated to its limit, and convergence is then checked on two plain cycles. Nonlinear acceptance also requires a normalized heat-balance residual ≤ 1.</p><p>Ly × depth gives the cross-section of a 1D reduction. Ny = 1, full left/right contacts and zero top/bottom flux produce the transverse-uniform limit. Grid/time refinement remains necessary, especially for weak 3ω: BDF2 shifts the effective frequency of harmonic n by about (2πn/N)²/3 with N steps per period, about 3 % at 3ω with 64 steps and 0.2 % with 256. The model assumes isotropic material properties (apart from the field-induced terms of the Magnetic field section), perfect interfaces and no front/back heat losses.</p>"
       }, {
         "title": "Magnetic field (3D)",
-        "html": "<h3>Galvanomagnetic and thermomagnetic transport</h3><p>A uniform field Bz (T) acts perpendicular to the plane; positive Bz points out of the screen (x right, y up). With R the rotation by +90° (R·v = ẑ × v):<br>E = ρ(1 + mB²)J + R_H·B·RJ + α∇T + N·B·R∇T<br>q = T(αJ + N·B·RJ) − κ(∇T − S·B·R∇T)</p><p>These replace J = −σ(∇V + α∇T) and q = αTJ − k∇T; ∇·J = 0 and ρCp ∂T/∂t = −∇·q − J·∇V hold unchanged. Solved for the current, with E = −∇V, ρ′ = ρₑ(T)(1 + mB²) and h = R_H·B:<br>J = σ̂(E − α∇T − N·B·R∇T), σ̂ = (ρ′ − h·R)/(ρ′² + h²)<br>Within a smooth homogeneous material:<br>ρCp ∂T/∂t = ∇·(κ∇T) + ρ′|J|² − T(dα/dT)J·∇T + 2N·B·ẑ·(∇T × J) + N·B·T·ẑ·(∇ × J)<br>The Hall term does no work, and the Righi–Leduc term only redistributes heat.</p><p>R_H is the Hall coefficient (m³/C), m the magnetoresistance (1/T²), N the Nernst coefficient (V/(K·T)) and S the Righi–Leduc coefficient (1/T), all constant. The Peltier tensor T(α + N·B·R) follows from Onsager reciprocity, so the Ettingshausen coefficient is P = TN/κ (Bridgman relation). In a long bar with current along x: E_y = R_H·B·J_x (Hall) and ∂T/∂y = (TN/κ)·B·J_x (Ettingshausen). Without current and with ∇T along x: E_y = N·B·∂T/∂x (Nernst) and ∂T/∂y = S·B·∂T/∂x (Righi–Leduc).</p><h3>Hall voltage and numerics</h3><p>The Hall voltage is V_H = V(P+) − V(P−) between two point probes. The default probes, P+ at the bottom middle and P− at the top middle, give V_H = R_H·I·B/t for current along +x (t = depth). In the discretization, each link keeps its own longitudinal field and takes the transverse field from the cell average of the two perpendicular links. For a link a→b of length L and half-face area A, with e = [Va − Vb − αmean(Tb − Ta)]/L, ē the cell average of e over the two links of the other direction, ∂T/∂x and ∂T/∂y the cell-average gradients, ρ′ the link-mean ρₑ times (1 + mB²), σL = ρ′/(ρ′² + h²) and σH = h/(ρ′² + h²):<br>x link: Iab = A[σL(e + N·B·∂T/∂y) + σH(ēy − N·B·∂T/∂x)]<br>y link: Iab = A[σL(e − N·B·∂T/∂x) − σH(ēx + N·B·∂T/∂y)]<br>x link: Qab = αmean(Ta + Tb)Iab/2 − κmean A[(Tb − Ta)/L + S·B·∂T/∂y] − A·Tmid·N·B·J̄y<br>y link: Qab = αmean(Ta + Tb)Iab/2 − κmean A[(Tb − Ta)/L − S·B·∂T/∂x] + A·Tmid·N·B·J̄x<br>J̄ is the cell-average current density and Tmid = (Ta + Tb)/2. Electrical work Iab(Va − Vb) is shared between the two nodes, as at Bz = 0. The non-symmetric systems are solved by banded LU, with one factorization per resistivity state. With Bz = 0 the equations and numerics are exactly those of the 2D model.</p>"
+        "html": "<h3>Galvanomagnetic and thermomagnetic transport</h3><p>A uniform field Bz (T) acts perpendicular to the plane; positive Bz points out of the screen (x right, y up). With R the rotation by +90° (R·v = ẑ × v):<br>E = ρ(1 + mB²)J + R_H·B·RJ + α∇T + N·B·R∇T<br>q = T(αJ + N·B·RJ) − κ(∇T − S·B·R∇T)</p><p>These replace J = −σ(∇V + α∇T) and q = αTJ − k∇T; ∇·J = 0 and ρCp ∂T/∂t = −∇·q − J·∇V hold unchanged. Solved for the current, with E = −∇V, ρ′ = ρₑ(T)(1 + mB²) and h = R_H·B:<br>J = σ̂(E − α∇T − N·B·R∇T), σ̂ = (ρ′ − h·R)/(ρ′² + h²)<br>Within a smooth homogeneous material:<br>ρCp ∂T/∂t = ∇·(κ∇T) + ρ′|J|² − T(dα/dT)J·∇T + 2N·B·ẑ·(∇T × J) + N·B·T·ẑ·(∇ × J)<br>The Hall term does no work, and the Righi–Leduc term only redistributes heat. Entropy production stays positive only while the Ettingshausen figure of merit N²B²T/(ρ′κ) is below 1. The constant coefficients describe weak fields (Hall angle σ|R_H·Bz| up to about 0.3) and do not follow σ(T).</p><p>R_H is the Hall coefficient (m³/C), m the magnetoresistance (1/T²), N the Nernst coefficient (V/(K·T)) and S the Righi–Leduc coefficient (1/T), all constant. The Peltier tensor T(α + N·B·R) follows from Onsager reciprocity, so the Ettingshausen coefficient is P = TN/κ (Bridgman relation). In a long bar with current along x: E_y = R_H·B·J_x (Hall) and ∂T/∂y = (TN/κ)·B·J_x (Ettingshausen). Without current and with ∇T along x: E_y = N·B·∂T/∂x (Nernst) and ∂T/∂y = S·B·∂T/∂x (Righi–Leduc).</p><h3>Hall voltage and numerics</h3><p>The Hall voltage is V_H = V(P+) − V(P−) between two point probes. The default probes, P+ at the bottom middle and P− at the top middle, give V_H = R_H·I·B/t for current along +x (t = depth). In the discretization, each link keeps its own longitudinal field and takes the transverse field from the cell average of the two perpendicular links. For a link a→b of length L and half-face area A, with e = [Va − Vb − αmean(Tb − Ta)]/L, ē the cell average of e over the two links of the other direction, ∂T/∂x and ∂T/∂y the cell-average gradients, ρ′ the link-mean ρₑ times (1 + mB²), σL = ρ′/(ρ′² + h²) and σH = h/(ρ′² + h²):<br>x link: Iab = A[σL(e + N·B·∂T/∂y) + σH(ēy − N·B·∂T/∂x)]<br>y link: Iab = A[σL(e − N·B·∂T/∂x) − σH(ēx + N·B·∂T/∂y)]<br>x link: Qab = αmean(Ta + Tb)Iab/2 − κmean A[(Tb − Ta)/L + S·B·∂T/∂y] − A·Tmid·N·B·J̄y<br>y link: Qab = αmean(Ta + Tb)Iab/2 − κmean A[(Tb − Ta)/L − S·B·∂T/∂x] + A·Tmid·N·B·J̄x<br>J̄ is the cell-average current density and Tmid = (Ta + Tb)/2. Electrical work Iab(Va − Vb) is shared between the two nodes, as at Bz = 0. The non-symmetric systems are solved by banded LU, with one factorization per resistivity state. With Bz = 0 the equations and numerics are exactly those of the 2D model.</p>"
       }];
     })(globalThis.TE);
 

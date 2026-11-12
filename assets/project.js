@@ -99,8 +99,9 @@
     if (r.diagnostics !== undefined) {
       assert(object(r.diagnostics), 'Invalid diagnostics.');
       for (const key of ['heatResidualNormalized', 'heatResidualWatts']) { finite(r.diagnostics[key], key); assert(r.diagnostics[key] >= 0, 'Negative residual.'); }
-      if (periodic) for (const key of ['temperatureCycleError', 'terminalHarmonicError']) {
-        assert(r.diagnostics[key] === null || Number.isFinite(r.diagnostics[key]) && r.diagnostics[key] >= 0, 'Invalid cycle diagnostic.');
+      if (periodic) {
+        for (const key of ['temperatureCycleError', 'terminalHarmonicError']) assert(r.diagnostics[key] === null || Number.isFinite(r.diagnostics[key]) && r.diagnostics[key] >= 0, 'Invalid cycle diagnostic.');
+        for (const key of ['cycleEnergyResidualWatts', 'cycleMeanPowerWatts']) finite(r.diagnostics[key], key);
       }
     }
     TE.checkResult(r);

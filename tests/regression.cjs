@@ -520,14 +520,15 @@ async function check(label, fn) {
       close(r.temperature[16 * 17 + 8], top, 1e-4, `top at ${I} A`);
       assert(r.diagnostics.iterations < 80 && Math.abs(r.energyResidual) < 1e-9, `${I} A: ${r.diagnostics.iterations} iterations`);
     }
-    // Above 1 the short-circuit conductivity κ − σN²B²T is negative: rejected before the run, explained after.
+    // Above 1 the entropy production is no longer positive: rejected before the run, explained after.
     assert(TE.validate2DConfig(cooler(1, 1.3)).some(i => i.path === 'materials.0.nernst' && /figure of merit/.test(i.message)));
     assert.throws(() => TE.run2D(cooler(4)), /Ettingshausen figure of merit .* ≥ 1/); // no convergence
     assert.throws(() => TE.run2D(cooler(2)), /At 393\.3 K, E has an Ettingshausen figure of merit σN²B²T\/κ = 1\.05 ≥ 1/); // converged past the limit
-    // Hall and Seebeck terms enter the exact limit; B = 0 or N = 0 gives no limit.
-    close(TE.ettingshausenMerit(1e-5, 0, 1.5, {nernst: 2e-4}, 300, 1), .8, 1e-12, 'σN²B²T/κ');
-    assert.equal(TE.ettingshausenMerit(1e-5, 2e-4, 1.5, {nernst: 2e-4}, 300, 0), 0);
-    close(TE.ettingshausenMerit(1e-5, 0, 1.5, {nernst: 2e-4, hall: 1e-4}, 300, 1), .8, 1e-12, 'Hall drops out');
+    // The limit is N²B²T/(ρ′κ): Hall and Seebeck terms cancel, magnetoresistance enters ρ′; B = 0 or N = 0 gives no limit.
+    close(TE.ettingshausenMerit(1e-5, 1.5, {nernst: 2e-4}, 300, 1), .8, 1e-12, 'σN²B²T/κ');
+    assert.equal(TE.ettingshausenMerit(1e-5, 1.5, {nernst: 2e-4}, 300, 0), 0);
+    assert.equal(TE.ettingshausenMerit(1e-5, 1.5, {hall: 1e-4}, 300, 1), 0);
+    close(TE.ettingshausenMerit(1e-5, 1.5, {nernst: 2e-4, hall: 1e-4, magnetoresistance: 1}, 300, 1), .4, 1e-12, 'ρ′ = ρ(1 + mB²)');
   });
   await check('Review items: electrical errors in a field, map check, electrode bars, closed report plots, one-point Bode, decades', async () => {
     // A failed banded solve in a field explains itself like the solve without field.
@@ -1057,6 +1058,36 @@ async function check(label, fn) {
     let markers = 0; a.hallMarkers = () => markers++; a.result = ac;
     e('results').hidden = false; e('profileCard').hidden = false; e('profileField').value = 'temperature'; e('profileTime').value = '0';
     a.drawProfile(); assert.equal(markers, 1);
+  });
+  await check('Weak-field warning, cycle energy balance and the simplified second-law limit', () => {
+    // Weak-field warning: non-blocking, only for painted materials, by Hall angle σ|R_H·Bz| or m·Bz².
+    const field = (B, extra = {}) => { const c = model(); c.magneticField = B; c.materials = c.materials.map(m => ({...m, sigma: 1e3, hall: 5e-4, magnetoresistance: 0, ...extra})); return c; };
+    assert.equal(TE.modelWarnings(field(0)).length, 0); assert.equal(TE.modelWarnings(field(.5)).length, 0); // angle 0.25
+    const strong = field(-1); // angle 0.5, either field direction
+    assert.equal(TE.validate2DConfig(strong).length, 0);
+    const warned = TE.modelWarnings(strong); assert(warned.length >= 1 && warned.every(w => w.path === 'magneticField' && /Hall angle σ\|R_H·Bz\| = 0\.50/.test(w.message)));
+    assert(TE.modelWarnings(field(.5, {magnetoresistance: 1})).every(w => /m·Bz² = 0\.25/.test(w.message) && !/Hall angle/.test(w.message)));
+    assert(TE.modelWarnings(field(.5, {magnetoresistance: 1})).length >= 1);
+    const unused = field(1); unused.materials.push({...unused.materials[0], name: 'spare', hall: 1}); // not painted
+    assert(TE.modelWarnings(unused).every(w => !w.message.startsWith('spare')));
+    const both = model(true); for (const side of ['left', 'right', 'top', 'bottom']) both.thermal[side] = {kind: 'flux', value: 0};
+    both.magneticField = 1; both.materials = both.materials.map(m => ({...m, sigma: 1e3, hall: 5e-4}));
+    assert.deepEqual([...new Set(TE.modelWarnings(both).map(w => w.path))], ['thermal', 'magneticField']);
+    // Library at 1 T: bismuth and lightly doped n-Ge are beyond the weak-field range, Bi2Te3 is not.
+    const lib = name => JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '..', 'lib', name), 'utf8')).material,
+      one = name => { const c = model(); c.magneticField = 1; c.materials = [lib(name)]; c.materialMap = c.materialMap.map(() => 0); return TE.modelWarnings(c).length; };
+    assert.equal(one('Bismuth.json'), 1); assert.equal(one('Ge_n_1e15.json'), 1); assert.equal(one('Bi2Te3.json'), 0);
+    // Cycle energy balance: mean heat out equals mean U·I in a periodic state; steady runs keep heat out − U·I.
+    const d = ac.diagnostics;
+    assert(ac.converged && Number.isFinite(d.cycleEnergyResidualWatts) && d.cycleMeanPowerWatts > 0);
+    assert(Math.abs(d.cycleEnergyResidualWatts) < 1e-5 * d.cycleMeanPowerWatts, `cycle balance ${d.cycleEnergyResidualWatts} W of ${d.cycleMeanPowerWatts} W`);
+    close(d.cycleMeanPowerWatts, TE.terminalQuantities(ac).meanPower, 1e-12, 'mean U·I');
+    assert(Math.abs(dc.energyResidual) < 1e-10 && ac.energyResidual === undefined);
+    // Without a thermal anchor the Joule heat is stored: the cycle balance shows it as −mean U·I.
+    const drift = model(true); for (const side of ['left', 'right', 'top', 'bottom']) drift.thermal[side] = {kind: 'flux', value: 0};
+    drift.maxPeriods = 3; let last = null;
+    assert.throws(() => TE.run2D(drift, () => {}, r => last = r), e => e.unconverged);
+    close(last.diagnostics.cycleEnergyResidualWatts, -last.diagnostics.cycleMeanPowerWatts, 1e-6, 'stored Joule heat');
   });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

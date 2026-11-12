@@ -67,7 +67,8 @@
     const diagnostics = r.diagnostics;
     app.$('diagnosticsNote').textContent = diagnostics
       ? (periodic ? `Cycle errors: temperature ${diagnostics.temperatureCycleError === null ? 'pending' : app.fmt(diagnostics.temperatureCycleError, 3)}; terminal harmonics ${diagnostics.terminalHarmonicError === null ? 'pending' : app.fmt(diagnostics.terminalHarmonicError, 3)}. ` +
-        (diagnostics.cycleExtrapolations ? `Cycle start extrapolated ${diagnostics.cycleExtrapolations}× (acceptance uses unextrapolated cycles). ` : '') : '') +
+        (diagnostics.cycleExtrapolations ? `Cycle start extrapolated ${diagnostics.cycleExtrapolations}× (acceptance uses unextrapolated cycles). ` : '') +
+        `Cycle energy balance: mean heat out − mean U·I = ${app.fmt(diagnostics.cycleEnergyResidualWatts, 3)} W (mean U·I ${app.fmt(diagnostics.cycleMeanPowerWatts, 3)} W); zero in a periodic state. ` : '') +
         `Heat balance: normalized residual ${app.fmt(diagnostics.heatResidualNormalized, 3)}; maximum free-node residual ${app.fmt(diagnostics.heatResidualWatts, 3)} W. Acceptance requires normalized errors ≤ 1.`
       : '';
     // Peak, Re and Im to 4 significant digits of the peak (one last digit per row). A harmonic below 1E-9 of the
