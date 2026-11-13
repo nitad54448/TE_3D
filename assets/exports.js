@@ -137,6 +137,8 @@
         terminal += add('hall-voltage', cycle(hall.history, 'Hall voltage V(P+) − V(P−) · V'));
       } else terminal += `<p>Hall voltage: not applicable. ${esc(hallInfo.reason)}</p>`;
     } else terminal += table(['Steady quantity', 'Value'], [['Probe temperature (K)', r.temperature[probe]], ['Terminal voltage (V)', r.terminalVoltage], ['Terminal current (A)', r.current], ['Electrical power absorbed (W)', r.electricalPower], ['Magnetic field Bz (T)', c.magneticField ?? 0],
+      ['Voltage probes ΔV = V(P+) − V(P−) (V)', hall.value],
+      ['Four-terminal resistance R₄ = ΔV/I (Ω)', !terminalData.openCircuit && Math.abs(r.current) > terminalData.currentFloor ? hall.value / r.current : 'Not applicable: no terminal current'],
       ['Hall voltage V(P+) − V(P−) (V)', hallInfo.active ? hall.value : 'Not applicable: ' + hallInfo.reason],
       ...(hallInfo.active ? [['Hall resistance R_xy = V_H/I (Ω)', hallInfo.resistance ? hallInfo.resistance.re : 'Not applicable: no terminal current']] : [])]);
     html += page('Terminal spectrum and probe', terminal);

@@ -44,6 +44,7 @@
   // Vertical tablist: Up/Down move between steps (Left/Right are handled in app.js).
   const tabs = () => [...document.querySelectorAll('[role=tab]')];
   document.querySelector('.tabs')?.addEventListener('keydown', e => {
+    if (app.busy) return;
     const all = tabs(), i = all.indexOf(document.activeElement);
     if (i < 0 || !['ArrowDown', 'ArrowUp'].includes(e.key)) return;
     e.preventDefault();
@@ -56,7 +57,7 @@
   const help = $('shortcutHelp');
   $('helpButton')?.addEventListener('click', () => help?.showModal?.());
   document.addEventListener('keydown', e => {
-    if (help?.open) return;
+    if (app.busy || help?.open) return;
     if (e.altKey && !e.ctrlKey && !e.metaKey && /^[1-5]$/.test(e.key)) {
       e.preventDefault();
       const tab = tabs()[Number(e.key) - 1];

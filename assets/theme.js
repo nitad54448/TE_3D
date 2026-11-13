@@ -6,16 +6,20 @@
 
   // Read URL query params if provided (for screenshots, deep links, testing)
   const urlParams = new URLSearchParams(window.location.search);
-  const paramTheme = urlParams.get('theme');
+  const paramTheme = ['light', 'dark'].includes(urlParams.get('theme')) ? urlParams.get('theme') : null;
 
   const system = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: light)') : null;
-  let savedTheme;
-  try { savedTheme = localStorage.getItem(themeKey); } catch {}
-  const explicitTheme = savedTheme === 'light' || savedTheme === 'dark';
+  const readSavedTheme = () => {
+    try {
+      const value = localStorage.getItem(themeKey);
+      return value === 'light' || value === 'dark' ? value : null;
+    } catch { return null; }
+  };
+  const savedTheme = readSavedTheme();
   
   const activeTheme = (paramTheme === 'light' || paramTheme === 'dark')
     ? paramTheme
-    : (explicitTheme ? savedTheme : (system?.matches ? 'light' : 'dark'));
+    : (savedTheme ?? (system?.matches ? 'light' : 'dark'));
 
   root.dataset.theme = activeTheme;
 
@@ -62,6 +66,7 @@
     const themeBtn = document.getElementById('themeToggle');
     if (themeBtn) {
       themeBtn.addEventListener('click', () => {
+        if (globalThis.TEApp?.busy) return;
         const nextTheme = root.dataset.theme === 'light' ? 'dark' : 'light';
         try { localStorage.setItem(themeKey, nextTheme); } catch {}
         applyTheme(nextTheme);
@@ -69,32 +74,14 @@
     }
 
     // Deep link parameters: ?tab=geometry&run=1
-    const targetTab = urlParams.get('tab');
-    const shouldRun = urlParams.get('run');
-    if (targetTab || shouldRun) {
-      const checkReady = setInterval(() => {
-        if (globalThis.TE_APP_READY && globalThis.TEApp && globalThis.TE) {
-          clearInterval(checkReady);
-          if (shouldRun === '1') {
-            try {
-              const cfg = globalThis.TEApp.read();
-              const result = globalThis.TE.run2D(cfg);
-              globalThis.TEApp.accept(result);
-            } catch (err) {
-              if (typeof globalThis.TEApp.runSimulation === 'function') {
-                globalThis.TEApp.runSimulation();
-              }
-            }
-          }
-          if (targetTab && typeof globalThis.TEApp.tab === 'function') {
-            globalThis.TEApp.tab(targetTab);
-          }
-        }
-      }, 50);
-    }
+    // Classic scripts have finished by DOMContentLoaded; a failed startup must not leave a polling timer.
+    const app = globalThis.TEApp, targetTab = urlParams.get('tab');
+    if (!globalThis.TE_APP_READY || !app) return;
+    if (['materials', 'geometry', 'boundaries', 'solver', 'results'].includes(targetTab)) app.tab(targetTab);
+    if (urlParams.get('run') === '1') app.runSimulation();
   });
 
   system?.addEventListener?.('change', event => {
-    if (!paramTheme && !localStorage.getItem(themeKey)) applyTheme(event.matches ? 'light' : 'dark');
+    if (!paramTheme && !readSavedTheme()) applyTheme(event.matches ? 'light' : 'dark');
   });
 })();

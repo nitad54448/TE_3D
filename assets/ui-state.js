@@ -40,6 +40,7 @@ globalThis.TEApp = {};
   app.selected = 0;
   app.result = null;
   app.worker = null;
+  app.busy = false;
   app.probe = 0;
   app.started = 0;
   app.paint = false;

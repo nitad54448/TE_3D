@@ -1668,6 +1668,10 @@
               const msg = periodic ? 'Temperature must stay above 0 K for the entire cycle: DC > |AC peak|.' : 'Absolute temperature must be strictly greater than 0 K.';
               add(p + '.value.bias', msg);
               if (periodic) add(p + '.value.amplitude', msg);
+            } else if (b.kind === 'temperature' && (low < 1 || high > TE.resultLimits.temperature)) {
+              const msg = `Prescribed temperature must stay within the application operating range 1–${TE.resultLimits.temperature} K${periodic ? ' for the entire cycle' : ''}.`;
+              add(p + '.value.bias', msg);
+              if (periodic) add(p + '.value.amplitude', msg);
             } else {
               probeTemperatures.add(low);
               probeTemperatures.add(high);

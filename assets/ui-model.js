@@ -201,7 +201,7 @@
     if (sweep) app.$('solverMethod').textContent = mode === 'steady' ? 'Frequency sweep · needs a nonzero AC peak' : 'Periodic · frequency sweep';
   };
   app.paintAt = function paintAt(e) {
-    if (app.worker || app.importingProject || !app.geomFrame) return;
+    if (app.busy || app.worker || app.importingProject || !app.geomFrame) return;
     const rect = app.$('geometryCanvas').getBoundingClientRect(),
       x = e.clientX - rect.left,
       y = e.clientY - rect.top,
@@ -329,7 +329,7 @@
     };
     show('validationSummary', issues.length ? '<strong>Correct these inputs before applying, exporting or running:</strong><ul>' + issues.slice(0, 10).map(e => `<li><b>${app.esc(e.path)}</b> — ${app.esc(e.message)}</li>`).join('') + '</ul>' + (issues.length > 10 ? `<small>${issues.length - 10} more issue(s) are highlighted in the form.</small>` : '') : '');
     show('validationWarnings', warnings.length ? '<strong>Check before running (the model still runs):</strong><ul>' + warnings.map(w => `<li>${app.esc(w.message)}</li>`).join('') + '</ul>' : '');
-    for (const id of ['run', 'save']) app.$(id).disabled = Boolean(app.worker) || issues.length > 0;
+    for (const id of ['run', 'save']) app.$(id).disabled = Boolean(app.busy || app.worker) || issues.length > 0;
     let pending = false,
       signature = null;
     try {
@@ -338,7 +338,7 @@
       signature = JSON.stringify(g);
     } catch {}
     const apply = app.$('applyGrid');
-    apply.disabled = Boolean(app.worker) || issues.length > 0 || !pending;
+    apply.disabled = Boolean(app.busy || app.worker) || issues.length > 0 || !pending;
     apply.classList.toggle('mesh-pending', !apply.disabled);
     if (!pending) {
       app.lastMeshEdit = null;
@@ -387,15 +387,18 @@
     return app.config;
   };
   app.applyMesh = () => {
+    if (app.busy) return;
     try {
       app.applyGeometry();
       app.dirty();
+      app.history?.('Edit', `Apply mesh ${app.config.nx} × ${app.config.ny}`);
       app.$('status').textContent = `Mesh applied: ${app.config.nx} × ${app.config.ny} = ${app.config.nx * app.config.ny} elements, ${(app.config.nx + 1) * (app.config.ny + 1)} nodes. Inspect material regions after remeshing.`;
     } catch (e) {
       app.notice(e.message, true);
     }
   };
   app.fillMaterial = () => {
+    if (app.busy) return;
     app.config.materialMap.fill(app.selected);
     app.drawGeometry();
     app.dirty();
@@ -408,6 +411,7 @@
     if (app.$('materialFilesButton')) app.$('materialFilesButton').disabled = atLimit;
   };
   app.removeMaterial = (index) => {
+    if (app.busy) return;
     if (app.config.materials.length <= 1) return;
     try {
       try {
@@ -442,6 +446,7 @@
     }
   };
   app.addMaterial = () => {
+    if (app.busy) return;
     try {
       app.config = app.read();
       TE.assert(app.config.materials.length < 12, 'Maximum 12 materials.');
@@ -498,7 +503,7 @@
       TE.assert(!app.worker && !app.importingProject, 'Wait until the current operation finishes.');
       TE.assert(file.size <= 65536, 'Material JSON must be at most 64 KB.');
       const material = app.parseMaterialJson(await file.text());
-      TE.assert(!app.worker && !app.importingProject, 'Wait until the current operation finishes, then add the material again.');
+      if (app.busy || app.worker || app.importingProject) return;
       const config = app.read();
       TE.assert(config.materials.length < 12, 'Maximum 12 materials.');
       config.materials.push(material);
@@ -508,7 +513,7 @@
       app.dirty();
       app.validateUI();
     } catch (error) {
-      app.notice(error.message, true);
+      if (!app.busy) app.notice(error.message, true);
     } finally {
       input.value = '';
     }
@@ -556,7 +561,7 @@
     if (!offline) {
       let text = null;
       try {
-        const res = await fetch('lib/' + file);
+        const res = await fetch('lib/' + file, {cache: 'no-cache'});
         if (res.ok) text = await res.text();
       } catch {}
       if (text !== null) return {material: app.parseMaterialJson(text), via: 'file'};
@@ -737,6 +742,7 @@
     app.$('preset').value = value;
   };
   app.loadPreset = async () => {
+    if (app.busy || app.worker || app.importingProject) return;
     const token = ++app.presetToken,
       p = app.$('preset').value,
       build = {dc: app.jouleContactsConfig, module: app.moduleConfig, rc: app.rcConfig, 'hall-pge': app.hallPGeConfig, film: app.filmConfig}[p];

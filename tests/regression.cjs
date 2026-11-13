@@ -21,7 +21,7 @@ function el(id) {
     setAttribute(){}, removeAttribute(){}, setCustomValidity(){}, addEventListener(){}});
   return elements.get(id);
 }
-globalThis.document = {getElementById: el, querySelector: () => el('main'), querySelectorAll: () => []};
+globalThis.document = {getElementById: el, querySelector: () => el('main'), querySelectorAll: () => [], documentElement: {dataset: {}}};
 globalThis.window = {};
 load('ui-state.js');
 for (const name of ['ui-model.js', 'ui-plots.js', 'ui-sweep.js', 'ui-worker.js', 'ui-downloads.js', 'ui-project.js']) load(name);
@@ -37,7 +37,8 @@ function appContext(initial = {}) {
     return els.get(id);
   };
   const sandbox = {console, Blob, TextEncoder, TextDecoder, DecompressionStream, setTimeout, clearTimeout, setInterval, clearInterval, performance, structuredClone,
-    devicePixelRatio: 1, requestAnimationFrame: () => 0, addEventListener: noop, fetch: () => Promise.reject(new Error('offline')),
+    devicePixelRatio: 1, requestAnimationFrame: () => 0, windowListeners: {},
+    addEventListener(type, fn) {(this.windowListeners[type] ??= []).push(fn);}, fetch: () => Promise.reject(new Error('offline')),
     URL: {createObjectURL: () => 'blob:', revokeObjectURL: noop},
     document: {getElementById: get, querySelector: () => get('main'), querySelectorAll: () => [], listeners: {}, addEventListener(type, fn) {this.listeners[type] = fn;},
       documentElement: {dataset: {}}, createElement: () => ({click: noop})}};
@@ -488,6 +489,9 @@ async function check(label, fn) {
     assert(e('fourTerminalReadout').textContent.includes(a.si(dv, 'V')));
     assert(e('fourTerminalReadout').textContent.includes(a.si(dv / r.current, 'Ω')));
     assert.equal(e('hMetric').textContent, '—'); // zero-field voltage is not labelled Hall
+    const report = TE.resultReport(r).html, shown = value => String(Number(value.toPrecision(6)));
+    assert(report.includes('<td>Voltage probes ΔV = V(P+) − V(P−) (V)</td><td>' + shown(dv) + '</td>'));
+    assert(report.includes('<td>Four-terminal resistance R₄ = ΔV/I (Ω)</td><td>' + shown(dv / r.current) + '</td>'));
     const reversed = structuredClone(c); reversed.electrical.value.bias *= -1;
     close(TE.hallVoltage(TE.run2D(reversed)).value, -dv, 1e-5, 'current reversal');
     const thicker = structuredClone(c); thicker.depth *= 2;
@@ -674,7 +678,7 @@ async function check(label, fn) {
     vm.runInNewContext(TE.workerSource(), worker); worker.self.onmessage({data: c});
     assert.deepEqual([messages.at(-2).type, messages.at(-1).type, messages.at(-1).unconverged], ['checkpoint', 'error', true]);
     const applyGeometry = app.applyGeometry; app.applyGeometry = () => app.config; app.config = c; app.worker = null;
-    globalThis.Worker = class { postMessage() { setTimeout(() => messages.forEach(data => this.onmessage({data: structuredClone(data)}))); } terminate() {} };
+    globalThis.Worker = class extends EventTarget { postMessage() { setTimeout(() => messages.forEach(data => this.onmessage({data: structuredClone(data)}))); } terminate() {} };
     try {
       app.runSimulation(); await new Promise(resolve => setTimeout(resolve, 20)); // the page replays the worker's messages
       assert.equal(el('badge').textContent, 'UNCONVERGED'); assert.equal(el('badge').className, 'warning');
@@ -878,7 +882,7 @@ async function check(label, fn) {
     Object.defineProperty(e('status'), 'textContent', {get: () => text, set: v => {text = v; writes++;}});
     const progress = (cycle, step) => ({type: 'progress', progress: {cycle, maxPeriods: 10, step, samples: 64, error: null}});
     const messages = [...Array.from({length: 30}, (_, i) => progress(1, i + 1)), progress(2, 1)];
-    context.Worker = class { postMessage() { setTimeout(() => messages.forEach(data => this.onmessage({data}))); } terminate() {} };
+    context.Worker = class extends EventTarget { postMessage() { setTimeout(() => messages.forEach(data => this.onmessage({data}))); } terminate() {} };
     a.applyGeometry = () => a.config;
     a.runSimulation(); const start = writes; await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(writes - start, 2, text); assert(text.startsWith('Cycle 2/10')); // cycle 1 once, then cycle 2
@@ -928,7 +932,7 @@ async function check(label, fn) {
     const saved = messages.filter(m => m.type === 'checkpoint'); assert(saved.length >= 2);
     const {context, app: a, el: e} = appContext({preset: 'layers'}), decode = context.TE.decodeWorkerMessage;
     let decoded = 0; context.TE.decodeWorkerMessage = m => (m.type === 'checkpoint' && decoded++, decode(m));
-    context.Worker = class { postMessage() { setTimeout(() => messages.filter(m => m.type !== 'error').forEach(data => this.onmessage({data: structuredClone(data)}))); } terminate() {} };
+    context.Worker = class extends EventTarget { postMessage() { setTimeout(() => messages.filter(m => m.type !== 'error').forEach(data => this.onmessage({data: structuredClone(data)}))); } terminate() {} };
     a.applyGeometry = () => a.config; a.config = c;
     a.runSimulation(); await new Promise(resolve => setTimeout(resolve, 20));
     const whileRunning = decoded; a.cancelSimulation(); // Stop shows the latest saved cycle (and always stops the clock)
@@ -1115,6 +1119,89 @@ async function check(label, fn) {
     big.electrical.value = {bias: 1e-3, amplitude: 0, phase: 0};
     const hall = TE.run2D(big), probe = 60; // bottom middle to top middle
     close(hall.voltage[probe] - hall.voltage[80 * 121 + probe], -6.24e-4 * 1e-3 * 1 / 1e-3, 1e-3, 'V_H = R_H·I·B/t on 120 × 80');
+  });
+  await check('Fixed temperatures respect the result range before running; convection ambient is independent', () => {
+    for (const value of [.5, 2200]) {
+      const c = model(); c.thermal.left.value = value; c.thermal.right.value = value;
+      assert(TE.validate2DConfig(c).some(i => i.path === 'thermal.left.value.bias' && /1–2000 K/.test(i.message)));
+    }
+    for (const [bias, amplitude] of [[300, 299.5], [1999, 2]]) {
+      const c = model(true); c.thermal.left.value = {bias, amplitude}; c.thermal.right.value = {bias, amplitude};
+      assert(TE.validate2DConfig(c).some(i => i.path === 'thermal.left.value.amplitude' && /entire cycle/.test(i.message)));
+    }
+    const ambient = model(); ambient.thermal.left = {kind: 'convection', h: 1, value: 2500};
+    assert.equal(TE.validate2DConfig(ambient).length, 0);
+  });
+  await check('Busy UI and worker cleanup cover success, Stop, errors, exhausted cycles, sweeps and page exit', () => {
+    for (const exit of ['result', 'stop', 'error', 'workerError', 'messageError', 'badResult', 'startError', 'unconverged', 'sweepDone', 'sweepError', 'pagehide']) {
+      const {app: a, context, el: e} = appContext();
+      const c = model(exit === 'unconverged' || exit.startsWith('sweep'));
+      if (exit.startsWith('sweep')) c.sweep = {enabled: true, min: 1, max: 2, points: 2, spacing: 'linear'};
+      a.applyGeometry = () => (a.config = c); a.validateUI = noop; a.drawBode = noop;
+      const regions = [e('header'), e('tabs'), e('content'), e('logDrawer'), e('logToggle')];
+      regions.forEach(r => r.inert = false);
+      context.document.querySelectorAll = selector => selector === '.top, .tabs, .content, #logDrawer, #logToggle' ? regions : [];
+      let worker;
+      context.Worker = class extends EventTarget {
+        constructor() { super(); if (exit === 'startError') throw new Error('Cannot start worker'); worker = this; }
+        postMessage() {} terminate() { this.terminated = true; }
+      };
+      try {
+        a.runSimulation();
+        if (exit !== 'startError') {
+          assert(a.busy && Object.hasOwn(context.document.documentElement.dataset, 'calculating'), exit);
+          assert(regions.every(r => r.inert) && !e('cancel').hidden && e('run').disabled, exit);
+          const painted = JSON.stringify(c.materialMap); a.selected = 1; a.fillMaterial();
+          assert.equal(JSON.stringify(c.materialMap), painted, 'Painting is blocked while busy');
+          if (exit === 'result') worker.onmessage({data: {type: 'result', result: structuredClone(dc)}});
+          else if (exit === 'stop') a.cancelSimulation();
+          else if (exit === 'workerError') worker.onerror({message: 'Failed worker'});
+          else if (exit === 'messageError') worker.dispatchEvent(new Event('messageerror'));
+          else if (exit === 'badResult') worker.onmessage({data: {type: 'result', result: {}}});
+          else if (exit === 'unconverged') {
+            worker.onmessage({data: {type: 'checkpoint', result: {...structuredClone(ac), converged: false}}});
+            worker.onmessage({data: {type: 'error', unconverged: true, message: 'Cycle budget exhausted'}});
+            assert.equal(e('badge').textContent, 'UNCONVERGED');
+          } else if (exit === 'sweepDone') {
+            a.activeSweep.results.push(structuredClone(ac));
+            worker.onmessage({data: {type: 'sweepDone'}});
+          } else if (exit === 'pagehide') context.windowListeners.pagehide.forEach(fn => fn());
+          else worker.onmessage({data: {type: exit === 'sweepError' ? 'sweepError' : 'error', message: 'Failed calculation'}});
+        }
+        assert(!a.busy && !a.worker && a.clock === null, exit);
+        assert(!Object.hasOwn(context.document.documentElement.dataset, 'calculating') && regions.every(r => !r.inert) && e('cancel').hidden, exit);
+        assert(!worker || worker.terminated, exit);
+        if (worker) { const badge = e('badge').textContent; worker.onmessage({data: {type: 'error', message: 'Late message'}}); assert.equal(e('badge').textContent, badge); }
+      } finally { if (a.busy || a.worker) a.endCalculation(); }
+    }
+  });
+  await check('Only successful mesh applications enter the project history', () => {
+    const {app: a} = appContext(), entries = [];
+    a.history = (...entry) => entries.push(entry); a.dirty = noop;
+    a.applyGeometry = () => { a.config = model(); };
+    a.applyMesh(); assert.equal(entries.length, 1); assert(entries[0][1].includes('4 × 1'));
+    a.applyGeometry = () => { throw new Error('Invalid mesh'); };
+    a.applyMesh(); assert.equal(entries.length, 1);
+  });
+  await check('A pending material load cannot change the model or run status during calculation', async () => {
+    for (const kind of ['library', 'file']) {
+      const {app: a, el: e} = appContext();
+      let resolve;
+      const loaded = new Promise(done => { resolve = done; }), before = JSON.stringify(a.config);
+      let pending;
+      if (kind === 'library') {
+        a.libraryRecord = () => loaded; e('presetMaterial').value = 'Copper.json';
+        pending = e('presetMaterial').onchange();
+      } else {
+        e('materialFiles').files = [{size: 100, text: () => loaded}];
+        pending = a.importMaterialJson();
+      }
+      a.busy = true; a.worker = {}; e('badge').textContent = 'COMPUTING'; e('status').textContent = 'Running';
+      resolve(kind === 'library' ? {material: model().materials[0]} : JSON.stringify(model().materials[0]));
+      await pending;
+      assert.equal(JSON.stringify(a.config), before, kind);
+      assert.equal(e('badge').textContent, 'COMPUTING', kind); assert.equal(e('status').textContent, 'Running', kind);
+    }
   });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

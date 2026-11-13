@@ -156,34 +156,64 @@
     }
     app.$('status').textContent = reason + text;
   };
+  let lockedRegions = null;
   app.lock = function lock(value) {
+    app.busy = Boolean(value);
+    const root = document.documentElement, cancel = app.$('cancel'),
+      returnFocus = !value && document.activeElement === cancel;
+    if (value) {
+      root.dataset.calculating = '';
+      // The run controls are outside these regions: Stop stays reachable by mouse and keyboard.
+      if (!lockedRegions) {
+        lockedRegions = new Map([...document.querySelectorAll('.top, .tabs, .content, #logDrawer, #logToggle')].map(e => [e, e.inert]));
+        for (const e of lockedRegions.keys()) e.inert = true;
+      }
+      app.$('shortcutHelp').close?.();
+    } else {
+      delete root.dataset.calculating;
+      if (lockedRegions) for (const [e, inert] of lockedRegions) e.inert = inert;
+      lockedRegions = null;
+    }
+    document.querySelector('main')?.setAttribute('aria-busy', String(Boolean(value)));
     document.querySelectorAll('.settings').forEach(e => e.disabled = value);
     for (const id of ['preset', 'importProject', 'addMaterial', 'materialFilesButton', 'presetMaterial', 'run', 'save']) app.$(id).disabled = value;
-    app.$('cancel').hidden = !value;
+    cancel.hidden = !value;
+    if (value) cancel.focus?.();
     if (!value) {
       app.updateMaterialCap(); // the material buttons stay disabled at the 12-material limit
       app.modes();
       app.validateUI();
+      if (returnFocus) app.$('run').focus?.();
+    }
+  };
+  // All exits release the worker, timer, cursor and inert regions before displaying a result/error.
+  app.endCalculation = () => {
+    const worker = app.worker;
+    app.worker = null;
+    try { worker?.terminate(); }
+    finally {
+      try { app.stopClock(); }
+      finally { app.lock(false); }
     }
   };
   app.runSimulation = () => {
-    if (app.worker || app.importingProject || app.exporting) return;
+    if (app.busy || app.worker || app.importingProject || app.exporting) return;
     app.presetToken++;
     try {
       app.applyGeometry();
       TE.from2DConfig(app.config);
       app.palette();
+      app.activeSweep = app.config.sweep?.enabled ? {
+        config: JSON.parse(JSON.stringify(app.config)),
+        frequencies: TE.validateSweep(app.config),
+        results: [],
+        status: 'running',
+        index: 0
+      } : null;
     } catch (e) {
       app.notice(e.message, true);
       return;
     }
-    app.activeSweep = app.config.sweep?.enabled ? {
-      config: JSON.parse(JSON.stringify(app.config)),
-      frequencies: TE.validateSweep(app.config),
-      results: [],
-      status: 'running',
-      index: 0
-    } : null;
     app.lock(true);
     app.setExports(false);
     app.$('badge').textContent = 'COMPUTING';
@@ -200,10 +230,7 @@
       app.$('elapsed').textContent = ((performance.now() - app.started) / 1000).toFixed(1) + ' s';
     }, 100);
     const finishError = message => {
-      app.worker?.terminate();
-      app.worker = null;
-      app.stopClock();
-      app.lock(false);
+      app.endCalculation();
       app.retainResults(message);
       app.$('badge').textContent = 'ERROR';
       app.$('badge').className = 'error';
@@ -212,10 +239,7 @@
     // sweep points), not as a failure.
     const finishUnconverged = message => {
       const last = app.checkpoint;
-      app.worker?.terminate();
-      app.worker = null;
-      app.stopClock();
-      app.lock(false);
+      app.endCalculation();
       app.sweepResult = null;
       app.$('bodeCard').hidden = true;
       app.accept(last);
@@ -228,93 +252,103 @@
       const url = URL.createObjectURL(new Blob([TE.workerSource()], {
         type: 'text/javascript'
       }));
-      const worker = new Worker(url);
+      let worker;
+      try { worker = new Worker(url); }
+      finally { URL.revokeObjectURL(url); }
       app.worker = worker;
-      URL.revokeObjectURL(url);
       // Ignore anything still queued from a worker that was stopped or replaced.
       worker.onmessage = event => {
         if (app.worker !== worker) return;
-        // A checkpoint stays encoded until it is shown (see app.checkpoint in ui-state.js).
-        if (event.data?.type === 'checkpoint') {
-          app.holdCheckpoint(event.data);
-          return;
-        }
-        let data;
         try {
-          data = TE.decodeWorkerMessage(event.data);
+          // A checkpoint stays encoded until it is shown (see app.checkpoint in ui-state.js).
+          if (event.data?.type === 'checkpoint') {
+            app.holdCheckpoint(event.data);
+            return;
+          }
+          let data;
+          try {
+            data = TE.decodeWorkerMessage(event.data);
+          } catch (e) {
+            finishError('Unable to decode solver result: ' + e.message);
+            return;
+          }
+          if (data.type === 'sweepStart') {
+            app.activeSweep.index = data.index;
+            app.checkpoint = null;
+            app.$('status').textContent = `Frequency ${data.index + 1}/${data.total}: ${app.fmt(data.frequency)} Hz`;
+          } else if (data.type === 'progress') {
+            // The status line is a live region: rewrite it for a new cycle or frequency, otherwise at most once
+            // a second, so screen readers are not flooded. The progress bar follows every message.
+            const now = performance.now(), key = `${data.index ?? 0}:${data.progress.cycle}`;
+            if (key !== app.statusKey || now - app.statusAt >= 1000) {
+              app.statusKey = key;
+              app.statusAt = now;
+              const prefix = app.activeSweep ? `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz · ` : '';
+              app.$('status').textContent = prefix + `Cycle ${data.progress.cycle}/${data.progress.maxPeriods} · step ${data.progress.step}/${data.progress.samples}${data.progress.error === null ? '' : ' · normalized error ' + app.fmt(data.progress.error, 3)}`;
+            }
+            app.$('runProgress').max = app.activeSweep ? data.total : data.progress.maxPeriods;
+            app.$('runProgress').value = app.activeSweep ? data.index + (data.progress.cycle - 1 + data.progress.step / data.progress.samples) / data.progress.maxPeriods : data.progress.cycle - 1 + data.progress.step / data.progress.samples;
+            app.$('runProgress').title = 'Completed frequencies plus current cycle budget; convergence can finish earlier.';
+          } else if (data.type === 'sweepPoint') {
+            try {
+              TE.checkResult(data.result);
+            } catch (e) {
+              finishError(e.message);
+              return;
+            }
+            app.activeSweep.results.push(data.result);
+            app.checkpoint = null;
+            app.sweepResult = app.activeSweep;
+            app.refreshSweepPoints();
+            app.drawBode();
+            if (!data.result.converged) app.$('status').textContent = `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz did not converge in ${data.result.periods} cycles. Kept as unconverged (excluded from Bode); continuing.${TE.hasThermalAnchor(data.result.config) ? '' : ' ' + TE.anchorHint}`;
+          } else if (data.type === 'sweepDone') {
+            app.endCalculation();
+            const unconverged = app.activeSweep.results.filter(r => !r.converged).length;
+            app.finishSweep(unconverged ? `Sweep completed with ${unconverged} unconverged point(s), excluded from Bode.${TE.hasThermalAnchor(app.activeSweep.config) ? '' : ' ' + TE.anchorHint}` : 'Sweep completed.', true);
+          } else if (data.type === 'error' && data.unconverged && app.checkpoint && !app.activeSweep) finishUnconverged(data.message);
+          else if (data.type === 'sweepError' || data.type === 'error') finishError('Calculation failed: ' + data.message);else if (data.type === 'result') {
+            try {
+              TE.checkResult(data.result);
+            } catch (e) {
+              finishError(e.message);
+              return;
+            }
+            app.endCalculation();
+            app.sweepResult = null;
+            app.$('bodeCard').hidden = true;
+            app.accept(data.result);
+            app.$('badge').textContent = 'CONVERGED';
+            app.$('status').textContent = 'Computed successfully. Refine the mesh and time steps to check accuracy.';
+          }
         } catch (e) {
-          finishError('Unable to decode solver result: ' + e.message);
-          return;
-        }
-        if (data.type === 'sweepStart') {
-          app.activeSweep.index = data.index;
-          app.checkpoint = null;
-          app.$('status').textContent = `Frequency ${data.index + 1}/${data.total}: ${app.fmt(data.frequency)} Hz`;
-        } else if (data.type === 'progress') {
-          // The status line is a live region: rewrite it for a new cycle or frequency, otherwise at most once
-          // a second, so screen readers are not flooded. The progress bar follows every message.
-          const now = performance.now(), key = `${data.index ?? 0}:${data.progress.cycle}`;
-          if (key !== app.statusKey || now - app.statusAt >= 1000) {
-            app.statusKey = key;
-            app.statusAt = now;
-            const prefix = app.activeSweep ? `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz · ` : '';
-            app.$('status').textContent = prefix + `Cycle ${data.progress.cycle}/${data.progress.maxPeriods} · step ${data.progress.step}/${data.progress.samples}${data.progress.error === null ? '' : ' · normalized error ' + app.fmt(data.progress.error, 3)}`;
-          }
-          app.$('runProgress').max = app.activeSweep ? data.total : data.progress.maxPeriods;
-          app.$('runProgress').value = app.activeSweep ? data.index + (data.progress.cycle - 1 + data.progress.step / data.progress.samples) / data.progress.maxPeriods : data.progress.cycle - 1 + data.progress.step / data.progress.samples;
-          app.$('runProgress').title = 'Completed frequencies plus current cycle budget; convergence can finish earlier.';
-        } else if (data.type === 'sweepPoint') {
-          try {
-            TE.checkResult(data.result);
-          } catch (e) {
-            finishError(e.message);
-            return;
-          }
-          app.activeSweep.results.push(data.result);
-          app.checkpoint = null;
-          app.sweepResult = app.activeSweep;
-          app.refreshSweepPoints();
-          app.drawBode();
-          if (!data.result.converged) app.$('status').textContent = `Frequency ${data.index + 1}/${data.total} · ${app.fmt(data.frequency)} Hz did not converge in ${data.result.periods} cycles. Kept as unconverged (excluded from Bode); continuing.${TE.hasThermalAnchor(data.result.config) ? '' : ' ' + TE.anchorHint}`;
-        } else if (data.type === 'sweepDone') {
-          app.worker.terminate();
-          app.worker = null;
-          app.stopClock();
-          app.lock(false);
-          const unconverged = app.activeSweep.results.filter(r => !r.converged).length;
-          app.finishSweep(unconverged ? `Sweep completed with ${unconverged} unconverged point(s), excluded from Bode.${TE.hasThermalAnchor(app.activeSweep.config) ? '' : ' ' + TE.anchorHint}` : 'Sweep completed.', true);
-        } else if (data.type === 'error' && data.unconverged && app.checkpoint && !app.activeSweep) finishUnconverged(data.message);
-        else if (data.type === 'sweepError' || data.type === 'error') finishError('Calculation failed: ' + data.message);else if (data.type === 'result') {
-          try {
-            TE.checkResult(data.result);
-          } catch (e) {
-            finishError(e.message);
-            return;
-          }
-          app.worker.terminate();
-          app.worker = null;
-          app.stopClock();
-          app.lock(false);
-          app.sweepResult = null;
-          app.$('bodeCard').hidden = true;
-          app.accept(data.result);
-          app.$('badge').textContent = 'CONVERGED';
-          app.$('status').textContent = 'Computed successfully. Refine the mesh and time steps to check accuracy.';
+          finishError('Unable to process solver message: ' + e.message);
         }
       };
       worker.onerror = e => {
         if (app.worker === worker) finishError('Worker error: ' + e.message);
       };
+      worker.addEventListener('messageerror', () => {
+        if (app.worker === worker) finishError('Unable to read a solver message.');
+      });
       worker.postMessage(app.config);
     } catch (e) {
       finishError('Unable to start: ' + e.message);
     }
   };
   app.cancelSimulation = () => {
-    app.worker?.terminate();
-    app.worker = null;
-    app.stopClock();
-    app.lock(false);
+    if (!app.busy && !app.worker) return;
+    app.endCalculation();
     app.retainResults('Stopped by user.');
   };
+  // pagehide also covers navigation and the back/forward cache. The browser owns the cursor after exit;
+  // clearing the page state here ensures a restored page is idle and has no orphaned calculation.
+  window.addEventListener?.('pagehide', () => {
+    if (!app.busy && !app.worker) return;
+    app.endCalculation();
+    app.checkpoint = null;
+    app.activeSweep = null;
+    app.clearResults('Calculation stopped because the page was left. Run again to compute the response.');
+    app.notice('Calculation stopped because the page was left.');
+  });
 })(globalThis.TEApp);

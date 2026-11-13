@@ -17,6 +17,7 @@
     if (app.result) app.$('status').textContent = 'Inputs changed. Run again to update the displayed result.';
   };
   app.tab = function tab(name) {
+    if (app.busy || !['materials', 'geometry', 'boundaries', 'solver', 'results'].includes(name)) return;
     document.querySelectorAll('[role=tab]').forEach(t => {
       const active = t.dataset.tab === name;
       t.setAttribute('aria-selected', active);
@@ -86,8 +87,8 @@
       TE.assert(!app.worker && !app.importingProject, 'Wait until the current operation finishes.');
       TE.assert(app.read().materials.length < 12, 'Maximum 12 materials.');
       const {material} = await app.libraryRecord(file);
-      // A run or import may have started, or inputs changed, while the file was loading.
-      TE.assert(!app.worker && !app.importingProject, 'Wait until the current operation finishes, then add the material again.');
+      // A run/import may have started while the file was loading; leave its locked UI alone.
+      if (app.busy || app.worker || app.importingProject) return;
       const config = app.read();
       TE.assert(config.materials.length < 12, 'Maximum 12 materials.');
       config.materials.push(material);
@@ -97,7 +98,7 @@
       app.dirty();
       app.validateUI();
     } catch (e) {
-      app.notice(e.message, true);
+      if (!app.busy) app.notice(e.message, true);
     } finally {
       select.value = '';
     }
@@ -107,7 +108,7 @@
     if (btn) app.removeMaterial(Number(btn.dataset.remove));
   });
   app.$('resultCanvas').onclick = e => {
-    if (!app.result || !app.resultFrame) return;
+    if (app.busy || !app.result || !app.resultFrame) return;
     const r = app.$('resultCanvas').getBoundingClientRect(),
       f = app.resultFrame,
       c = app.result.config,
@@ -174,6 +175,7 @@
   app.$('preset').onchange = app.loadPreset;
   document.querySelectorAll('.settings').forEach(e => {
     e.addEventListener('input', event => {
+      if (app.busy) return;
       // The colour bar of a material card follows its colour picker at once.
       if (event.target.type === 'color') event.target.closest('.material-card')?.style.setProperty('--material-color', TE.materialColor(event.target.value));
       if (event.target.type === 'number') {
@@ -185,6 +187,7 @@
       app.validateUI();
     });
     e.addEventListener('change', () => {
+      if (app.busy) return;
       app.modes();
       try {
         app.config = app.read();
@@ -226,7 +229,7 @@
     let files = catalog ? Object.keys(catalog) : app.libraryFallback;
     // Opened from disk, browsers block reading lib/: the list then comes from lib/catalog.js.
     if (globalThis.location?.protocol !== 'file:') try {
-      const res = await fetch('lib/index.json');
+      const res = await fetch('lib/index.json', {cache: 'no-cache'});
       if (res.ok) {
         const listed = (await res.json()).files;
         if (Array.isArray(listed)) files = listed;

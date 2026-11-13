@@ -109,6 +109,7 @@
    ========================================================================== */
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+:root[data-calculating], :root[data-calculating] * { cursor: wait !important; }
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -509,7 +510,13 @@ tbody tr:hover { background: var(--inset-bg); }
 /* ==========================================================================
    LABEL TOOLTIPS
    ========================================================================== */
-label:has(> .tip) { position: relative; }
+.field-with-tip { min-width: 0; }
+.tip-label { position: relative; display: flex; align-items: baseline; }
+.tip-label > label { min-width: 0; }
+.field-with-tip:has(> input:disabled) label, .field-with-tip:has(> select:disabled) label { color: var(--disabled-text); }
+.settings > .field-with-tip { margin-top: 12px; }
+.settings > .field-with-tip:first-child { margin-top: 0; }
+.field-controls > .field-with-tip { display: flex; align-items: center; gap: 8px; }
 button.tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; min-width: 0; padding: 1px 0 0; margin-left: 6px; gap: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: transparent; color: var(--muted); font: 600 10px/1 var(--font-sans); vertical-align: 1px; cursor: help; }
 button.tip:hover, button.tip:focus-visible { color: var(--accent); border-color: var(--accent); }
 button.tip:active { transform: none; }

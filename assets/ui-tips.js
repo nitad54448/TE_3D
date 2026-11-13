@@ -47,12 +47,14 @@
   let serial = 0;
   const attach = () => {
     for (const label of document.querySelectorAll('label')) {
-      if (label.querySelector('.tip')) continue;
+      if (label.closest('.field-with-tip')) continue;
       const control = label.querySelector('input,select');
       const text = control && tipFor(control);
       if (!text) continue;
       const name = [...label.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim() || control.id;
       const id = 'tip-' + (++serial);
+      if (!control.id) control.id = id + '-control';
+      label.htmlFor = control.id;
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'tip';
@@ -65,8 +67,13 @@
       tt.id = id;
       tt.setAttribute('role', 'tooltip');
       tt.textContent = text;
-      label.insertBefore(tt, control);
-      label.insertBefore(button, tt);
+      // Keep the native help button outside the label: the label belongs only to the input/select.
+      const wrapper = document.createElement('div'), heading = document.createElement('div');
+      wrapper.className = 'field-with-tip';
+      heading.className = 'tip-label';
+      label.replaceWith(wrapper);
+      wrapper.append(heading, control);
+      heading.append(label, button, tt);
     }
   };
   attach();
@@ -78,6 +85,7 @@
   // A tooltip opens when its "?" is clicked and closes on a second click, a click elsewhere, or Escape.
   const closeAll = except => document.querySelectorAll('.tip[aria-expanded="true"]').forEach(b => { if (b !== except) b.setAttribute('aria-expanded', 'false'); });
   document.addEventListener('click', e => {
+    if (app.busy) return;
     const tip = e.target.closest?.('.tip');
     closeAll(tip);
     if (!tip) return;

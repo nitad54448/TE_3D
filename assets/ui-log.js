@@ -103,7 +103,7 @@
 
   // Parameter edits become history entries as they are committed.
   const describe = el => {
-    const label = el.closest('label');
+    const label = el.labels?.[0] ?? el.closest('label');
     let name = el.id || el.dataset.key || 'field', unit = '';
     if (label) {
       const c = label.cloneNode(true);
@@ -123,7 +123,6 @@
   });
   $('preset')?.addEventListener('change', () => { const s = $('preset'); app.history('Load', 'Example: ' + (s.selectedOptions?.[0]?.textContent ?? s.value)); });
   $('presetMaterial')?.addEventListener('change', () => { const s = $('presetMaterial'); if (s.value) app.history('Edit', 'Added library material ' + (s.selectedOptions?.[0]?.textContent ?? s.value)); });
-  $('applyGrid')?.addEventListener('click', () => { if (!$('applyGrid').disabled) app.history('Edit', 'Apply mesh ' + $('nx')?.value + ' × ' + $('ny')?.value); });
   $('save')?.addEventListener('click', () => app.history('Save', 'Project save requested'));
 
   // ---- Drawer --------------------------------------------------------------------------------
@@ -157,6 +156,7 @@
     app.log('info', 'log', 'Session log exported.');
   });
   document.addEventListener('keydown', e => {
+    if (app.busy) return;
     if (e.ctrlKey || e.altKey || e.metaKey || !(e.key === 'l' || e.key === 'L')) return;
     if (/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName ?? '') || $('shortcutHelp')?.open) return;
     setOpen(drawer?.hidden ?? false);
