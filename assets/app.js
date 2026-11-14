@@ -1,9 +1,9 @@
 (function (app) {
   'use strict';
   app.notice = function notice(text, error = false) {
-    app.$('status').textContent = text;
     app.$('badge').textContent = error ? 'ERROR' : 'READY';
     app.$('badge').className = error ? 'error' : '';
+    app.$('status').textContent = text;
   };
   app.dirty = function dirty() {
     if (app.worker) return;
@@ -36,15 +36,16 @@
   document.querySelectorAll('[role=tab]').forEach(t => {
     t.onclick = () => app.tab(t.dataset.tab);
     t.onkeydown = e => {
+      if (app.busy) return;
       const tabs = [...document.querySelectorAll('[role=tab]')],
         i = tabs.indexOf(t);
       let next;
-      if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
-      if (e.key === 'ArrowLeft') next = tabs[(i + tabs.length - 1) % tabs.length];
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = tabs[(i + 1) % tabs.length];
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = tabs[(i + tabs.length - 1) % tabs.length];
       if (e.key === 'Home') next = tabs[0];
       if (e.key === 'End') next = tabs.at(-1);
       if (next) {
-        e.preventDefault();
+        e.preventDefault?.();
         app.tab(next.dataset.tab);
         next.focus();
       }
@@ -64,6 +65,7 @@
     if (!app.paintChanged) return;
     app.paintChanged = false;
     app.validateUI();
+    app.history?.('Edit', `Painted cells with ${app.config.materials[app.selected]?.name || 'selected material'}`);
   };
   app.$('geometryCanvas').onpointerup = endPaint;
   app.$('geometryCanvas').onpointercancel = endPaint;
@@ -97,6 +99,7 @@
       app.drawGeometry();
       app.dirty();
       app.validateUI();
+      app.history?.('Edit', `Added library material ${material.name}`);
     } catch (e) {
       if (!app.busy) app.notice(e.message, true);
     } finally {
@@ -151,17 +154,18 @@
   // A click anywhere else closes it too and leaves focus where the user clicked.
   const closeExportMenu = ({restoreFocus = true} = {}) => {
     const menu = app.$('exportMenu');
-    if (menu.hidden) return;
+    if (menu.hidden) return false;
     const refocus = restoreFocus && menu.contains(document.activeElement);
     menu.hidden = true;
     app.$('exportMenuButton').setAttribute('aria-expanded', 'false');
     if (refocus) app.$('exportMenuButton').focus();
+    return true;
   };
   app.$('exportMenu').addEventListener('click', e => {
     if (e.target.closest('button')) closeExportMenu();
   });
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeExportMenu();
+    if (e.key === 'Escape' && closeExportMenu()) e.preventDefault?.();
   });
   document.addEventListener('pointerdown', e => {
     if (!e.target?.closest?.('#exportMenu, #exportMenuButton')) closeExportMenu({restoreFocus: false});
@@ -252,4 +256,16 @@
   app.$('arrows').disabled = true;
   app.fill();
   globalThis.TE_APP_READY = true;
+
+  // Deep link parameters (?tab=geometry&run=1): run after remaining shell/log scripts finish loading.
+  const applyUrlParams = () => {
+    const search = globalThis.location?.search;
+    if (!globalThis.TE_APP_READY || !search || typeof URLSearchParams !== 'function') return;
+    const params = new URLSearchParams(search),
+      targetTab = params.get('tab');
+    if (['materials', 'geometry', 'boundaries', 'solver', 'results'].includes(targetTab)) app.tab(targetTab);
+    if (params.get('run') === '1') app.runSimulation();
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyUrlParams, {once: true});
+  else applyUrlParams();
 })(globalThis.TEApp);

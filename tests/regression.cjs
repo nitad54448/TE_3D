@@ -27,26 +27,91 @@ load('ui-state.js');
 for (const name of ['ui-model.js', 'ui-plots.js', 'ui-sweep.js', 'ui-worker.js', 'ui-downloads.js', 'ui-project.js']) load(name);
 const app = TEApp;
 const noop = () => {};
-function appContext(initial = {}) {
+function appContext(initial = {}, {search = ''} = {}) {
   const els = new Map(), ctx2d = new Proxy({}, {get: (t, k) => k === 'measureText' ? () => ({width: 10}) : k in t ? t[k] : noop, set: (t, k, v) => (t[k] = v, true)});
+  const makeEl = (id = '', tagName = 'DIV') => {
+    const classes = new Set(), attributes = {}, _listeners = {};
+    let _text = '', _html = '', _observers = [];
+    const notify = () => {
+      if (!_observers.length) return;
+      const list = [..._observers];
+      queueMicrotask(() => list.forEach(fn => fn()));
+    };
+    const node = {
+      id, tagName, value: initial[id] ?? '', hidden: false, disabled: false, checked: false, type: '', max: 0,
+      dataset: {}, style: {setProperty: noop}, options: [{}, {}, {}], selectedOptions: [{text: 'Temperature', textContent: 'Temperature'}],
+      files: [], children: [], parentElement: null, listeners: {}, attributes, _observe(fn) { _observers.push(fn); },
+      get textContent() { return _text; }, set textContent(v) { const s = String(v ?? ''); if (s !== _text) { _text = s; notify(); } },
+      get innerHTML() { return _html; }, set innerHTML(v) { const s = String(v ?? ''); if (s !== _html) { _html = s; notify(); } },
+      get className() { return [...classes].join(' '); },
+      set className(v) { classes.clear(); String(v ?? '').split(/\s+/).filter(Boolean).forEach(c => classes.add(c)); notify(); },
+      get firstElementChild() { return this.children[0] ?? null; },
+      classList: {
+        add(...c) { c.forEach(x => classes.add(x)); notify(); },
+        remove(...c) { c.forEach(x => classes.delete(x)); notify(); },
+        contains: c => classes.has(c),
+        toggle(c, force) { const on = force === undefined ? !classes.has(c) : Boolean(force); if (on) classes.add(c); else classes.delete(c); notify(); return on; }
+      },
+      setAttribute(k, v) { attributes[k] = String(v); },
+      getAttribute(k) { return Object.hasOwn(attributes, k) ? attributes[k] : null; },
+      hasAttribute(k) { return Object.hasOwn(attributes, k); },
+      removeAttribute(k) { delete attributes[k]; },
+      toggleAttribute(k, force) { const on = force === undefined ? !Object.hasOwn(attributes, k) : Boolean(force); if (on) attributes[k] = ''; else delete attributes[k]; return on; },
+      setCustomValidity: noop, focus: noop, click: noop, close() { this.open = false; }, showModal() { this.open = true; },
+      addEventListener(type, fn) { ( _listeners[type] ??= [] ).push(fn); this.listeners[type] = (...args) => _listeners[type].forEach(f => f(...args)); },
+      appendChild(child) { if (child && typeof child === 'object') { child.parentElement = this; this.children.push(child); notify(); } return child; },
+      append(...nodes) { nodes.forEach(n => this.appendChild(n)); },
+      removeChild(child) { const i = this.children.indexOf(child); if (i >= 0) { this.children.splice(i, 1); child.parentElement = null; notify(); } return child; },
+      replaceWith(other) {
+        if (!this.parentElement) return;
+        const p = this.parentElement, i = p.children.indexOf(this);
+        if (i >= 0) { p.children[i] = other; other.parentElement = p; this.parentElement = null; }
+      },
+      contains(other) { for (let cur = other; cur; cur = cur.parentElement) if (cur === this) return true; return false; },
+      matches: () => false,
+      closest(sel) {
+        for (let cur = this; cur; cur = cur.parentElement) {
+          if (sel.startsWith('.') && cur.classList?.contains(sel.slice(1))) return cur;
+          if (sel.startsWith('#') && cur.id === sel.slice(1)) return cur;
+          if (sel === 'label' && cur.tagName === 'LABEL') return cur;
+          if (sel === '[data-material]' && cur.dataset?.material !== undefined) return cur;
+          if (sel === '[data-side]' && cur.dataset?.side !== undefined) return cur;
+        }
+        return null;
+      },
+      querySelector: () => null, querySelectorAll: () => [],
+      cloneNode() { const c = makeEl(this.id, this.tagName); c.textContent = _text; return c; },
+      getContext: () => ctx2d, getBoundingClientRect: () => ({left: 0, top: 0, right: 100, bottom: 30, width: 100, height: 30}),
+      clientWidth: 700, clientHeight: 400
+    };
+    return node;
+  };
   const get = id => {
-    if (!els.has(id)) els.set(id, {id, value: initial[id] ?? '', textContent: '', innerHTML: '', hidden: false, disabled: false, checked: false, type: '', max: 0,
-      dataset: {}, style: {}, options: [{}, {}, {}], selectedOptions: [{text: 'Temperature'}], files: [], classList: {toggle(){}, remove(){}, add(){}}, listeners: {},
-      setAttribute(){}, removeAttribute(){}, setCustomValidity(){}, addEventListener(type, fn) {this.listeners[type] = fn;}, focus(){}, click(){}, getContext: () => ctx2d,
-      getBoundingClientRect: () => ({left: 0, top: 0}), clientWidth: 700, clientHeight: 400});
+    if (!els.has(id)) els.set(id, makeEl(id));
     return els.get(id);
   };
-  const sandbox = {console, Blob, TextEncoder, TextDecoder, DecompressionStream, setTimeout, clearTimeout, setInterval, clearInterval, performance, structuredClone,
-    devicePixelRatio: 1, requestAnimationFrame: () => 0, windowListeners: {},
+  const docListeners = {}, rootEl = makeEl('root', 'HTML');
+  const cssVars = {'--plot-text': '#a5bac8', '--plot-grid': '#3e5668', '--plot-line': '#73d8d0', '--plot-point': '#f0ad72',
+    '--panel': '#121c26', '--contact-source': '#ffffff', '--contact-sink': '#ef95df', '--contact-halo': '#101820', '--mesh-line': '#0b141d'};
+  class MockMutationObserver {
+    constructor(fn) { this.fn = fn; }
+    observe(target) { target?._observe?.(this.fn); }
+    disconnect() {}
+  }
+  const sandbox = {console, Blob, TextEncoder, TextDecoder, DecompressionStream, CompressionStream, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, performance, structuredClone, queueMicrotask,
+    MutationObserver: MockMutationObserver, innerWidth: 1280, innerHeight: 800,
+    devicePixelRatio: 1, requestAnimationFrame: () => 0, windowListeners: {}, location: {search, protocol: 'https:'},
+    getComputedStyle: () => ({getPropertyValue: name => cssVars[name] ?? ''}),
     addEventListener(type, fn) {(this.windowListeners[type] ??= []).push(fn);}, fetch: () => Promise.reject(new Error('offline')),
     URL: {createObjectURL: () => 'blob:', revokeObjectURL: noop},
-    document: {getElementById: get, querySelector: () => get('main'), querySelectorAll: () => [], listeners: {}, addEventListener(type, fn) {this.listeners[type] = fn;},
-      documentElement: {dataset: {}}, createElement: () => ({click: noop})}};
+    document: {getElementById: get, querySelector: () => get('main'), querySelectorAll: () => [], listeners: {},
+      addEventListener(type, fn) { (docListeners[type] ??= []).push(fn); this.listeners[type] = (...args) => docListeners[type].forEach(f => f(...args)); },
+      documentElement: rootEl, activeElement: null, createElement: tag => makeEl('', String(tag).toUpperCase())}};
   sandbox.globalThis = sandbox; sandbox.window = sandbox;
   vm.createContext(sandbox);
-  for (const name of ['core.js', 'exports.js', 'worker.js', 'project.js', 'ui-state.js', 'ui-model.js', 'ui-plots.js', 'ui-sweep.js', 'ui-worker.js', 'ui-downloads.js', 'ui-project.js', 'app.js'])
+  for (const name of ['theme.js', 'core.js', 'exports.js', 'worker.js', 'project.js', 'ui-state.js', 'ui-model.js', 'ui-plots.js', 'ui-sweep.js', 'ui-worker.js', 'ui-downloads.js', 'ui-project.js', 'app.js', 'ui-shell.js', 'ui-tips.js', 'ui-log.js'])
     vm.runInContext(fs.readFileSync(path.join(root, 'assets', name), 'utf8'), sandbox, {filename: name});
-  return {context: sandbox, app: sandbox.TEApp, el: get};
+  return {context: sandbox, app: sandbox.TEApp, el: get, makeEl};
 }
 app.tab = noop;
 app.notice = (s, error) => {el('status').textContent = s; el('badge').textContent = error ? 'ERROR' : 'READY';};
@@ -323,7 +388,7 @@ async function check(label, fn) {
     await assert.rejects(() => TE.zipFiles([metadataFile(), {name: 'model.json', data: '{"__proto__":{}}'}, {name: 'results.json', data: '{}'}]).then(TE.readProjectZip), /Unsafe JSON/);
   });
   await check('Deflate-compressed projects import with bounded decompression', async () => {
-    const source = new Uint8Array(await (await TE.zipFiles(minimal(dc))).arrayBuffer());
+    const source = new Uint8Array(await (await TE.zipFiles(minimal(dc), {compress: false})).arrayBuffer());
     const sv = new DataView(source.buffer), end = source.length - 22;
     let at = sv.getUint32(end + 16, true), offset = 0;
     const body = [], directory = [];
@@ -346,8 +411,37 @@ async function check(label, fn) {
     await assert.rejects(() => TE.zipFiles([{name: '../model.json', data: '{}'}]).then(TE.readProjectZip), /Unsafe archive/);
     await assert.rejects(() => TE.zipFiles([{name: 'model.json', data: '{}'}, {name: 'model.json', data: '{}'}]).then(TE.readProjectZip), /Duplicate/);
     await assert.rejects(() => TE.readProjectZip(newZip.slice(0, newZip.size - 5)), /truncated/);
-    const good = await TE.zipFiles(minimal(dc)); const bytes = new Uint8Array(await good.arrayBuffer()); bytes[30 + 'project.json'.length] ^= 1;
+    const good = await TE.zipFiles(minimal(dc), {compress: false}); const bytes = new Uint8Array(await good.arrayBuffer()); bytes[30 + 'project.json'.length] ^= 1;
     await assert.rejects(() => TE.readProjectZip(new Blob([bytes])), /Corrupt/);
+    // The same damage in a Deflate entry: the stream fails or the size or checksum disagrees, never a raw TypeError.
+    const packed = new Uint8Array(await (await TE.zipFiles(minimal(dc))).arrayBuffer()); packed[30 + 'project.json'.length + 3] ^= 0x55;
+    await assert.rejects(() => TE.readProjectZip(new Blob([packed])), /Corrupt archive data|size mismatch|exceeds its declared size/);
+  });
+  await check('Saved projects are Deflate-compressed, round-trip exactly, and fall back to stored entries', async () => {
+    const files = [...await TE.completeResultsFiles(ac, {probe: 2}), metadataFile('single', 0, 2)],
+      raw = files.reduce((n, f) => n + new Blob([f.data]).size, 0),
+      zip = await TE.zipFiles(files), stored = await TE.zipFiles(files, {compress: false});
+    assert(stored.size > raw && zip.size < raw / 2, `compressed ${zip.size} of ${raw} bytes`);
+    assert.deepEqual((await TE.readProjectZip(zip)).result, (await TE.readProjectZip(stored)).result);
+    assert.deepEqual((await TE.readProjectZip(zip)).result, JSON.parse(JSON.stringify(ac)));
+    // Central directory: method 8 for entries that shrink, 0 for those that do not (an empty-ish or random one).
+    const methods = async blob => {
+      const b = new Uint8Array(await blob.arrayBuffer()), v = new DataView(b.buffer), out = {};
+      for (let i = 0; i + 46 <= b.length; i++) if (v.getUint32(i, true) === 0x02014b50) out[new TextDecoder().decode(b.subarray(i + 46, i + 46 + v.getUint16(i + 28, true)))] = v.getUint16(i + 10, true);
+      return out;
+    };
+    const noise = require('node:crypto').randomFillSync(new Uint8Array(4096));
+    const mixed = await methods(await TE.zipFiles([{name: 'text.csv', data: '0.5,0.5,0.5\r\n'.repeat(500)}, {name: 'noise.bin', data: new Blob([noise])}, {name: 'tiny.txt', data: 'x'}]));
+    assert.deepEqual(mixed, {'text.csv': 8, 'noise.bin': 0, 'tiny.txt': 0});
+    assert(Object.values(await methods(stored)).every(m => m === 0));
+    // Without CompressionStream the archive is stored and still imports.
+    const native = globalThis.CompressionStream;
+    try {
+      globalThis.CompressionStream = undefined;
+      const fallback = await TE.zipFiles(files);
+      assert.equal(fallback.size, stored.size);
+      assert.deepEqual((await TE.readProjectZip(fallback)).result, JSON.parse(JSON.stringify(ac)));
+    } finally { globalThis.CompressionStream = native; }
   });
   // ---- 3D: magnetic field Bz perpendicular to the plane ----
   const hallBar = ({B = 1, mat = {}, nx = 60, ny = 12, L = 10e-3, W = 1e-3, t = .5e-3, thermal, electrical} = {}) => {
@@ -623,10 +717,27 @@ async function check(label, fn) {
     e('projectFile').files = [zip]; await a.importProject(); // opening a project
     assert.equal(e('preset').value, 'custom'); assert(e('status').textContent.startsWith('Imported project without results'));
   });
-  await check('HTML script paths and static IDs are consistent', () => {
+  await check('HTML script paths, cache-busting version tags, static IDs and README examples table are consistent', () => {
     const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
     const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]); assert.equal(ids.length, new Set(ids).size);
     for (const m of html.matchAll(/<script src="([^"?]+)(?:\?v=[\w.]+)?"/g)) assert(fs.existsSync(path.join(root, m[1])), m[1]); // ?v= busts browser caches
+    // Every stylesheet and script tag in index.html must carry the exact same ?v= version as .about and README.md.
+    const assetTags = [...html.matchAll(/(?:<script[^>]+src|<link[^>]+href)="([^"]+)"/g)].map(m => m[1]);
+    assert.equal(assetTags.length, 19);
+    const versions = assetTags.map(u => u.match(/\?v=([\w.]+)$/)?.[1]);
+    assert(versions.every(Boolean), 'Every asset URL in index.html must include ?v=');
+    assert.equal(new Set(versions).size, 1, 'Mismatched ?v= tags in index.html: ' + versions.join(', '));
+    const aboutVersion = html.match(/TE-3D · v ([\w.]+)/)?.[1];
+    assert.equal(aboutVersion, versions[0], '.about version differs from ?v=');
+    assert(readme.includes(`assets/core.js?v=${versions[0]}`), 'README.md ?v= example out of sync with index.html');
+    // Every built-in example option in #preset (except status-only Custom) must appear in README.md's Examples table.
+    const presetSection = html.match(/<select id="preset"[^>]*>(.*?)<\/select>/s)?.[1] ?? '';
+    for (const [, val, rawLabel] of presetSection.matchAll(/<option value="([^"]+)"[^>]*>([^<]+)<\/option>/g)) {
+      if (val === 'custom') continue;
+      const label = rawLabel.replaceAll('&amp;', '&');
+      assert(readme.includes(`| ${label} |`), `README.md Examples table missing "${label}"`);
+    }
     for (const name of fs.readdirSync(path.join(root, 'assets'))) {
       const code = fs.readFileSync(path.join(root, 'assets', name), 'utf8');
       for (const m of code.matchAll(/app\.\$\('([^']+)'\)/g)) assert(ids.includes(m[1]), 'Missing HTML ID ' + m[1]);
@@ -1202,6 +1313,225 @@ async function check(label, fn) {
       assert.equal(JSON.stringify(a.config), before, kind);
       assert.equal(e('badge').textContent, 'COMPUTING', kind); assert.equal(e('status').textContent, 'Running', kind);
     }
+  });
+  await check('Sweep mode hides the entire single-frequency tooltip wrapper, and presets reset sticky Bode impedance', async () => {
+    const {app: a, el: e, makeEl} = appContext({preset: 'layers', bodeQuantity: 'terminalVoltage', bodeRepresentation: 'polar'});
+    const wrap = makeEl('', 'DIV'); wrap.className = 'field-with-tip';
+    wrap.appendChild(e('singleFrequencyLabel'));
+    e('excitationMode').value = 'sweep'; a.modes();
+    assert.equal(wrap.hidden, true); assert.equal(e('singleFrequencyLabel').hidden, true);
+    e('excitationMode').value = 'periodic'; a.modes();
+    assert.equal(wrap.hidden, false); assert.equal(e('singleFrequencyLabel').hidden, false);
+    e('preset').value = 'rc'; await a.loadPreset();
+    assert.equal(e('bodeQuantity').value, 'impedance'); assert.equal(e('bodeRepresentation').value, 'complex');
+    e('preset').value = 'joule'; await a.loadPreset();
+    assert.equal(e('bodeQuantity').value, 'terminalVoltage'); assert.equal(e('bodeRepresentation').value, 'polar');
+    // Open-circuit sweeps also disable impedance and fall back to terminalVoltage.
+    const impOpt = {disabled: false, title: ''}, hallOpt = {disabled: false, title: ''};
+    e('bodeQuantity').querySelector = s => s.includes('impedance') ? impOpt : hallOpt;
+    e('bodeQuantity').value = 'impedance'; e('bodeFloor').value = '1E-12';
+    const oc = model(true); oc.electrical.kind = 'open_circuit'; oc.thermal.left = {kind: 'temperature', value: {bias: 300, amplitude: 5, phase: 0}};
+    a.sweepResult = {config: {...oc, sweep: {enabled: true, min: 1, max: 2, points: 2, spacing: 'log'}}, frequencies: [1], results: [TE.run2D(oc)], status: 'complete'};
+    a.drawBode();
+    assert.equal(impOpt.disabled, true); assert.equal(e('bodeQuantity').value, 'terminalVoltage');
+  });
+  await check('Session log and project history distinguish runs from UI errors, debounce typing, and record imports/saves accurately', async () => {
+    const flush = () => new Promise(resolve => queueMicrotask(resolve));
+    const {context, app: a, el: e, makeEl} = appContext({preset: 'layers'});
+    const historyTexts = () => e('historyList').children.map(li => `${li.children[1].textContent}: ${li.children[2].textContent}`);
+    const logItems = () => e('logList').children.map(li => ({cls: li.className, msg: li.children[2].textContent}));
+    e('elapsed').textContent = '1.8 s';
+    // Non-run notice errors must NOT record a bogus Run entry with stale elapsed time.
+    a.notice('Import failed', true); await flush();
+    assert(!historyTexts().some(t => t.startsWith('Run:')), 'Non-run error recorded as Run: ' + historyTexts().join(' | '));
+    // Actual COMPUTING -> CONVERGED run DOES record Run with elapsed time.
+    e('badge').className = ''; e('badge').textContent = 'COMPUTING'; await flush();
+    e('badge').textContent = 'CONVERGED'; await flush();
+    assert(historyTexts().includes('Run: CONVERGED · 1.8 s'));
+    // Failed ZIP export logs as lv-error even while badge remains CONVERGED.
+    e('status').textContent = 'Project save failed: Disk full'; await flush();
+    assert.equal(logItems().at(-1).cls, 'lv-error');
+    // Mid-sweep unconverged point logs as lv-warn while badge is COMPUTING; browsing a point does not inflate warnings.
+    e('badge').className = ''; e('badge').textContent = 'COMPUTING'; a.worker = {}; await flush();
+    const beforeWarn = Number(e('logCount').textContent || 0);
+    e('status').textContent = 'Frequency 1/2 · 1 Hz did not converge in 20 cycles. Kept as unconverged (excluded from Bode); continuing.'; await flush();
+    assert.equal(logItems().at(-1).cls, 'lv-warn');
+    assert.equal(Number(e('logCount').textContent), beforeWarn + 1);
+    a.worker = null; e('badge').textContent = 'SWEEP COMPLETE'; await flush();
+    const afterSweepWarn = Number(e('logCount').textContent);
+    e('status').textContent = 'Sweep map / report: 1 Hz · unconverged, excluded from Bode'; await flush();
+    assert.equal(Number(e('logCount').textContent), afterSweepWarn);
+    // Typing in a focused <input> debounces validation logging until commit; transient invalid keystrokes fixed before commit log nothing.
+    const numInput = makeEl('lx', 'INPUT'); numInput.type = 'number'; context.document.activeElement = numInput;
+    const box = e('validationSummary');
+    const li1 = makeEl('', 'LI'); li1.textContent = 'lx — must be positive';
+    box.querySelectorAll = s => s === 'li' ? [li1] : [];
+    const countBeforeTyping = Number(e('logCount').textContent);
+    box.hidden = false; box.innerHTML = '<ul><li>1</li></ul>'; await flush();
+    box.innerHTML = '<ul><li>2</li></ul>'; await flush();
+    assert.equal(Number(e('logCount').textContent), countBeforeTyping, 'Keystrokes logged prematurely before commit');
+    box.hidden = true; box.innerHTML = ''; await flush();
+    context.document.listeners.change({target: numInput});
+    assert.equal(Number(e('logCount').textContent), countBeforeTyping, 'Transient fixed input logged a false error');
+    // Committed invalid value logs exactly once on change.
+    box.hidden = false; box.innerHTML = '<ul><li>bad</li></ul>'; await flush();
+    context.document.listeners.change({target: numInput});
+    assert.equal(Number(e('logCount').textContent), countBeforeTyping + 1);
+    context.document.activeElement = null;
+    // Model-only project import and consecutive identical-badge project imports all enter Project history.
+    const modelZip = await context.TE.zipFiles([{name: 'project.json', data: JSON.stringify({format: 'thermoelectric-lab-project', version: context.TE.projectVersion, kind: 'model'})},
+      {name: 'model.json', data: JSON.stringify(model())}]);
+    e('projectFile').files = [modelZip]; await a.importProject();
+    assert(historyTexts().includes('Import: PROJECT · MODEL ONLY'));
+    const singleFiles = await context.TE.completeResultsFiles(dc, {probe: 0});
+    singleFiles.push({name: 'project.json', data: JSON.stringify({format: 'thermoelectric-lab-project', version: context.TE.projectVersion, kind: 'single', selectedIndex: 0, view: {field: 'temperature', harmonic: 0, representation: 'amplitude', arrows: false, profileField: 'temperature', terminalTrace: 'voltage', timeFraction: 0, probe: 0, x: 0, y: 0}, bodeOptions: null})});
+    const mEntry = singleFiles.find(f => f.name === 'manifest.json');
+    if (mEntry) { const d = JSON.parse(mEntry.data); d.files.push('project.json'); mEntry.data = JSON.stringify(d); }
+    const resZip = await context.TE.zipFiles(singleFiles);
+    e('projectFile').files = [resZip]; await a.importProject();
+    e('projectFile').files = [resZip]; await a.importProject();
+    assert.equal(historyTexts().filter(t => t === 'Import: PROJECT · CONVERGED').length, 2);
+    // Electrode edits name which electrode was edited; thermal-AC runs with DC electrical drive log AC single frequency.
+    const settingsEl = makeEl('', 'FIELDSET'); settingsEl.className = 'settings';
+    const elec = makeEl('', 'DIV'); elec.className = 'electrode';
+    const h3 = makeEl('', 'H3'); h3.textContent = 'SOURCE ELECTRODE';
+    elec.querySelector = s => s === 'h3' ? h3 : null;
+    const startLabel = makeEl('', 'LABEL'); startLabel.textContent = 'Range start';
+    const startInput = makeEl('sourceStart', 'INPUT'); startInput.value = '25';
+    settingsEl.appendChild(elec); elec.appendChild(startLabel); startLabel.appendChild(startInput);
+    context.document.listeners.change({target: startInput});
+    assert(historyTexts().some(t => t.includes('source electrode · Range start = 25')));
+    e('excitationMode').value = 'steady'; a.config.mode = 'periodic'; e('frequency').value = '5'; e('samples').value = '64';
+    e('status').textContent = 'Solving coupled 2D transport…'; await flush();
+    assert(logItems().some(x => x.msg.includes('Run started: AC single frequency 5 Hz, 64 steps/period')));
+  });
+  await check('Canvas clearing resets sub-1 DPR transforms; Hall markers use contrast halos; extreme aspect ratios clamp cleanly', () => {
+    const {context, app: a, el: e} = appContext({preset: 'layers'});
+    context.devicePixelRatio = 0.5;
+    const calls = [];
+    for (const id of ['resultCanvas', 'profileCanvas', 'geometryCanvas']) {
+      const c = e(id);
+      c.clientWidth = 700; c.clientHeight = 400;
+      c.getContext = () => new Proxy({}, {
+        get: (_, k) => k === 'measureText' ? () => ({width: 12}) : (...args) => calls.push([id, k, args]),
+        set: (_, k, v) => (calls.push([id, 'set:' + k, v]), true)
+      });
+    }
+    const slim = {...model(), lx: .01, ly: 1e-5, electrical: {...model().electrical, value: {bias: 1e-4, amplitude: 0, phase: 0}}}; // 1000:1 thin-film cross section
+    const f = a.canvasFrame('resultCanvas', slim);
+    assert(f.h >= 20 && f.w > 500, `Expected clamped height >= 20, got ${f.h}`);
+    const rcTexts = calls.filter(([id, k]) => id === 'resultCanvas' && k === 'fillText').map(([, , [t]]) => t);
+    assert(rcTexts.some(t => t.includes('display aspect scaled')));
+    // Only 2 y-axis ticks (0 and ly) plus 2 x/y titles + x ticks: no 5 stacked y-ticks.
+    assert(rcTexts.length <= 9, 'Expected intermediate y-ticks omitted on thin strip, got ' + rcTexts.length);
+    calls.length = 0;
+    a.clearResults('Cleared');
+    for (const id of ['resultCanvas', 'profileCanvas']) {
+      const idxTransform = calls.findIndex(([cid, k, args]) => cid === id && k === 'setTransform' && args.join(',') === '1,0,0,1,0,0');
+      const idxClear = calls.findIndex(([cid, k, args]) => cid === id && k === 'clearRect' && args[2] === e(id).width && args[3] === e(id).height);
+      assert(idxTransform >= 0 && idxClear > idxTransform, `clearResults must reset transform before clearRect on ${id}`);
+    }
+    calls.length = 0;
+    a.hallMarkers({ctx: e('geometryCanvas').getContext('2d'), left: 50, top: 20, w: 400, h: 200}, model());
+    const strokes = calls.filter(([, k]) => k === 'strokeText').map(([, , [t]]) => t);
+    const fills = calls.filter(([, k]) => k === 'fillText').map(([, , [t]]) => t);
+    assert.deepEqual(strokes, ['P+', 'P−']); assert.deepEqual(fills, ['P+', 'P−']);
+    // Exported SVG also applies a light halo stroke on P+/P− and clamps extreme aspect ratio.
+    const slimRes = TE.run2D(slim), report = TE.resultReport(slimRes).html;
+    assert(report.includes('paint-order="stroke">P+</text>') && report.includes('(aspect scaled)'));
+  });
+  await check('3D solver speedups: banded LU tracks row upper bounds with pivoting and thermalSolve caches factorizations', () => {
+    // Force row swaps across full bandwidth (zero diagonal on earlier rows) and verify exact dense residual.
+    const mesh = new TE.Mesh2D({nx: 5, ny: 4, lx: .005, ly: .004}), K = new Float64Array(16 * mesh.cells.length);
+    let seed = 17; const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647;
+    mesh.cells.forEach((_, c) => {
+      for (let p = 0; p < 4; p++) for (let q = 0; q < 4; q++) K[16 * c + 4 * p + q] = p === q ? (c % 2 === 0 ? 0 : .2) : 2.5 * (rnd() - .5);
+    });
+    const diag = Array.from({length: mesh.n}, (_, i) => i % 3 === 0 ? 0 : 1.5), fixed = new Map([[0, 2], [mesh.n - 1, -1]]);
+    const rhs = Array.from({length: mesh.n}, () => 4 * (rnd() - .5));
+    const x = TE.cellSystem(mesh, K, diag, fixed)(rhs, fixed);
+    const Ax = diag.map((d, i) => d * x[i]);
+    mesh.cells.forEach((cell, c) => { for (let p = 0; p < 4; p++) for (let q = 0; q < 4; q++) Ax[cell.nodes[p]] += K[16 * c + 4 * p + q] * x[cell.nodes[q]]; });
+    for (let i = 0; i < mesh.n; i++) {
+      if (fixed.has(i)) assert.equal(x[i], fixed.get(i));
+      else assert(Math.abs(Ax[i] - rhs[i]) < 1e-12, `Node ${i} residual ${Math.abs(Ax[i] - rhs[i])}`);
+    }
+    // Periodic magnetic run with Righi–Leduc and alpha = 0: thermalSolve reuses the cached factorization across Picard & BDF2 steps.
+    const rl = model(true); rl.magneticField = 1;
+    rl.materials[0] = {...rl.materials[0], righiLeduc: .02, hall: -1e-4};
+    let factorizations = 0; const origCellSystem = TE.cellSystem;
+    TE.cellSystem = (...args) => { factorizations++; return origCellSystem(...args); };
+    let r;
+    try { r = TE.run2D(rl); } finally { TE.cellSystem = origCellSystem; }
+    // 1 electric factorization + 2 thermal factorizations (backward-Euler step 1 + BDF2 step 2..N) across all cycles!
+    assert(r.converged && factorizations <= 4, `Expected <= 4 banded LU factorizations across whole periodic run, got ${factorizations}`);
+    assert(Math.abs(r.diagnostics.cycleEnergyResidualWatts) < 1e-5 * r.diagnostics.cycleMeanPowerWatts);
+  });
+  await check('Shell interactions: dialog backdrop close, layered Escape dismissal, tab tip closure and URL deep-link startup', () => {
+    const {context, app: a, el: e, makeEl} = appContext({preset: 'layers'}, {search: '?tab=solver'});
+    // Backdrop click on #shortcutHelp closes it; click on inner dialog child keeps it open.
+    const help = e('shortcutHelp'), inner = makeEl('', 'DIV'); help.appendChild(inner);
+    help.showModal(); assert.equal(help.open, true);
+    help.listeners.click({target: inner}); assert.equal(help.open, true);
+    help.listeners.click({target: help}); assert.equal(help.open, false);
+    // Layered Escape: open #logDrawer + #exportMenu; first Escape closes #exportMenu only, second closes #logDrawer and focuses #logToggle.
+    const drawer = e('logDrawer'), menu = e('exportMenu');
+    drawer.hidden = false; menu.hidden = false; menu.contains = () => false;
+    let toggleFocused = 0; e('logToggle').focus = () => toggleFocused++;
+    const makeKey = key => { const ev = {key, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }}; return ev; };
+    context.document.listeners.keydown(makeKey('Escape'));
+    assert.equal(menu.hidden, true); assert.equal(drawer.hidden, false);
+    context.document.listeners.keydown(makeKey('Escape'));
+    assert.equal(drawer.hidden, true); assert.equal(toggleFocused, 1);
+  });
+  await check('Sixth review: probe noise reads zero, the second-law text matches the library, one cache tag, run messages logged as runs', async () => {
+    // Probes at the same potential: the difference is solver rounding and reads 0, on the page and in the report.
+    const flat = TE.run2D(TE.default2D()), four = TE.fourTerminal(flat);
+    assert(Math.abs(TE.hallVoltage(flat).value) < four.floor && four.voltage === 0 && four.resistance === 0);
+    assert(TE.resultReport(flat).html.includes('<td>Voltage probes ΔV = V(P+) − V(P−) (V)</td><td>0</td>'));
+    const open = TE.default2D(); open.electrical.kind = 'open_circuit';
+    assert.equal(TE.fourTerminal(TE.run2D(open)).resistance, null);
+    // A real difference is untouched, with or without field.
+    const hallBar = TE.default2D();
+    hallBar.materials = hallBar.materials.map(m => ({...m, hall: 1e-6})); hallBar.magneticField = 1;
+    const hr = TE.run2D(hallBar);
+    assert.equal(TE.fourTerminal(hr).voltage, TE.hallVoltage(hr).value);
+    assert(TE.fourTerminal(hr).voltage !== 0);
+    // README: no library material reaches the second-law limit within ±100 T at 300 K.
+    const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8'), merits = {};
+    for (const file of JSON.parse(fs.readFileSync(path.join(root, 'lib', 'index.json'), 'utf8')).files) {
+      const m = JSON.parse(fs.readFileSync(path.join(root, 'lib', file), 'utf8')).material;
+      merits[file] = TE.ettingshausenMerit(1 / m.sigma, m.k, m, 300, 100);
+      assert(merits[file] < 1, file);
+    }
+    assert(readme.includes('No library material reaches it within ±100 T') && !readme.includes('only bismuth can reach it'));
+    assert.equal(merits['Bi2Te3.json'].toFixed(2), '0.13'); assert.equal(merits['PbTe.json'].toFixed(2), '0.08'); assert.equal(merits['Bismuth.json'].toFixed(3), '0.010');
+    // One version tag on every script and stylesheet, the same as the README example and the About box.
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8'), tags = new Set(html.match(/\?v=[\d.]+/g));
+    assert.equal(tags.size, 1);
+    const version = [...tags][0].slice(3);
+    assert(readme.includes(`assets/core.js?v=${version}`) && html.includes(`TE-3D · v ${version}<`));
+    // The built-in copies named in lib/README are the ones the application carries.
+    const libReadme = fs.readFileSync(path.join(root, 'lib', 'README.md'), 'utf8');
+    for (const file of Object.keys(app.libraryCopies)) assert(libReadme.includes('`' + file.replace('.json', '') + '`'), file);
+    assert(libReadme.includes(`the ${['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'][Object.keys(app.libraryCopies).length]} library materials`));
+    // Run outcomes that mention a saved cycle or an export are run lines, not project lines.
+    const {app: a, el: e} = appContext({preset: 'layers'});
+    const logged = async text => {
+      e('logList').children.length = 0; e('status').textContent = text;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return e('logList').children.at(-1)?.children[1].textContent;
+    };
+    assert.equal(await logged('Stopped by user. Showing the latest saved complete cycle of this run; harmonics are provisional.'), 'run');
+    assert.equal(await logged('Calculation failed: x. Showing the latest saved complete cycle of this run; harmonics are provisional.'), 'run');
+    assert.equal(await logged('Project saved with its results. Import project reopens it without recalculation.'), 'project');
+    assert.equal(await logged('Sweep map / report: 2 Hz · converged · inputs changed since this sweep; run again to export.'), 'status');
+    // The workflow rail names the solver that will run, not the selector.
+    const shell = fs.readFileSync(path.join(root, 'assets', 'ui-shell.js'), 'utf8');
+    assert(shell.includes("[val('mode')]") && !shell.includes("steady: 'DC'}[val('excitationMode')]"));
+    // Card fields are reported by model path, never by a generated tooltip id.
+    assert(fs.readFileSync(path.join(root, 'assets', 'ui-model.js'), 'utf8').includes('path: fieldPath(e)'));
+    void a;
   });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

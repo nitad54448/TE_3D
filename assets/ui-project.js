@@ -61,6 +61,7 @@
         app.clearResults('No results yet: this project holds the model only. Run it to compute the response.');
         app.$('elapsed').textContent = '';
         app.notice('Imported project without results. Run it to compute its response.');
+        app.history?.('Import', 'PROJECT · MODEL ONLY');
         app.showPreset('custom');
         app.tab('geometry');
         return;
@@ -82,6 +83,7 @@
       app.$('status').textContent = project.sweep
         ? `Imported project: ${project.sweep.results.length}/${project.sweep.frequencies.length} frequency points retained (${project.sweep.status}). Saved results are ready to inspect and export.`
         : `Imported project. ${project.result.converged ? 'Converged' : 'Unconverged, provisional'} saved results are ready to inspect and export.`;
+      app.history?.('Import', app.$('badge').textContent);
       app.showPreset('custom');
     } catch (error) {
       app.notice('Project import failed: ' + error.message, true);

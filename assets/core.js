@@ -516,7 +516,12 @@
           A = new Float64Array(n * W),
           couplings = [];
         // Row r stores columns r − kl … r + 2·kl (the upper kl diagonals take the pivoting fill-in).
-        for (let r = 0; r < n; r++) A[r * W + kl] += diagonal[order[r]];
+        // `upper[r]` tracks the rightmost column in row r that can hold a nonzero, avoiding work on empty fill-in slots.
+        const upper = new Int32Array(n);
+        for (let r = 0; r < n; r++) {
+          A[r * W + kl] += diagonal[order[r]];
+          upper[r] = r;
+        }
         mesh.cells.forEach((cell, c) => {
           for (let p = 0; p < 4; p++) {
             const row = pos[cell.nodes[p]];
@@ -526,7 +531,10 @@
               if (v === 0) continue;
               const node = cell.nodes[q],
                 col = pos[node];
-              if (col >= 0) A[row * W + col - row + kl] += v;else couplings.push(row, node, v);
+              if (col >= 0) {
+                A[row * W + col - row + kl] += v;
+                if (col > upper[row]) upper[row] = col;
+              } else couplings.push(row, node, v);
             }
           }
         });
@@ -534,7 +542,7 @@
         const piv = new Int32Array(n);
         for (let k = 0; k < n; k++) {
           const last = Math.min(n - 1, k + kl),
-            end = Math.min(n - 1, k + 2 * kl);
+            kBase = k * W - k + kl;
           let p = k,
             best = Math.abs(A[k * W + kl]);
           for (let r = k + 1; r <= last; r++) {
@@ -546,19 +554,29 @@
           }
           TE.assert(best > 0, 'Singular linear system: check that the domain is anchored.');
           piv[k] = p;
-          if (p !== k) for (let c = k; c <= end; c++) {
-            const i1 = k * W + c - k + kl,
-              i2 = p * W + c - p + kl,
-              t = A[i1];
-            A[i1] = A[i2];
-            A[i2] = t;
+          if (p !== k) {
+            const swapEnd = Math.max(upper[k], upper[p]),
+              pBase = p * W - p + kl;
+            for (let c = k; c <= swapEnd; c++) {
+              const t = A[kBase + c];
+              A[kBase + c] = A[pBase + c];
+              A[pBase + c] = t;
+            }
+            const u = upper[k];
+            upper[k] = upper[p];
+            upper[p] = u;
           }
-          const pivot = A[k * W + kl];
+          const uk = upper[k],
+            pivot = A[k * W + kl];
           for (let r = k + 1; r <= last; r++) {
-            const ir = r * W + k - r + kl,
+            const rBase = r * W - r + kl,
+              ir = rBase + k,
               f = A[ir] / pivot;
             A[ir] = f;
-            if (f !== 0) for (let c = k + 1; c <= end; c++) A[r * W + c - r + kl] -= f * A[k * W + c - k + kl];
+            if (f !== 0) {
+              if (uk > upper[r]) upper[r] = uk;
+              for (let c = k + 1; c <= uk; c++) A[rBase + c] -= f * A[kBase + c];
+            }
           }
         }
         return (rhs, fixedValues) => {
@@ -577,9 +595,10 @@
             if (bk !== 0) for (let r = k + 1; r <= last; r++) b[r] -= A[r * W + k - r + kl] * bk;
           }
           for (let k = n - 1; k >= 0; k--) {
-            const end = Math.min(n - 1, k + 2 * kl);
+            const uk = upper[k],
+              kBase = k * W - k + kl;
             let s = b[k];
-            for (let c = k + 1; c <= end; c++) s -= A[k * W + c - k + kl] * b[c];
+            for (let c = k + 1; c <= uk; c++) s -= A[kBase + c] * b[c];
             b[k] = s / A[k * W + kl];
           }
           const out = new Array(mesh.n);
@@ -973,21 +992,50 @@
         }
         // Thermal linear solve: conjugate gradients for the symmetric 2D operator; banded LU for the
         // non-symmetric ones, with Righi–Leduc conduction or the implicit Ettingshausen matrix `extra`.
+        // Reuses the banded LU factorization whenever the cell matrix, diagonal and fixed nodes are unchanged.
         thermalSolve(p, diag, rhs, fixed, initial, rtol, extra = null) {
           const m = this.mesh;
           if (!this.righiLeducActive && !extra) return TE.graphSolve(m, p.map(v => v.k), diag, rhs, fixed, {
             initial,
             rtol
           });
-          const K = extra ? Float64Array.from(extra) : new Float64Array(16 * m.cells.length);
-          if (this.righiLeducActive) {
-            const W = this.thermalWeights(p);
-            for (let c = 0; c < m.cells.length; c++) addCellMatrix(W, this.cellGeometry.L, c, K);
-          } else m.cells.forEach((cell, c) => cell.links.forEach((k, i) => {
-            const g = p[k].k, [a, b] = LINK_NODES[i], o = 16 * c;
-            K[o + 5 * a] += g; K[o + 4 * a + b] -= g; K[o + 4 * b + a] -= g; K[o + 5 * b] += g;
-          }));
-          return TE.cellSystem(m, K, diag, fixed)(rhs, fixed);
+          let K;
+          if (!extra) {
+            // Only Righi–Leduc conduction reaches this branch (without it, the CG solve above returned).
+            let base = this.thermalBaseCache;
+            if (!base || p.some((v, k) => v.kappa !== base.cond[k])) {
+              const K0 = new Float64Array(16 * m.cells.length),
+                W = this.thermalWeights(p);
+              for (let c = 0; c < m.cells.length; c++) addCellMatrix(W, this.cellGeometry.L, c, K0);
+              base = this.thermalBaseCache = {cond: p.map(v => v.kappa), K0};
+            }
+            K = base.K0;
+          } else {
+            K = Float64Array.from(extra);
+            if (this.righiLeducActive) {
+              const W = this.thermalWeights(p);
+              for (let c = 0; c < m.cells.length; c++) addCellMatrix(W, this.cellGeometry.L, c, K);
+            } else m.cells.forEach((cell, c) => cell.links.forEach((k, i) => {
+              const g = p[k].k, [a, b] = LINK_NODES[i], o = 16 * c;
+              K[o + 5 * a] += g; K[o + 4 * a + b] -= g; K[o + 4 * b + a] -= g; K[o + 5 * b] += g;
+            }));
+          }
+          const fixedKeys = [...fixed.keys()];
+          let cache = this.thermalCache;
+          const same = cache && cache.K.length === K.length && cache.diag.length === diag.length &&
+            cache.fixedKeys.length === fixedKeys.length &&
+            cache.fixedKeys.every((v, i) => v === fixedKeys[i]) &&
+            diag.every((v, i) => v === cache.diag[i]) &&
+            (cache.K === K || K.every((v, i) => v === cache.K[i]));
+          if (!same) {
+            cache = this.thermalCache = {
+              K,
+              diag: Float64Array.from(diag),
+              fixedKeys,
+              solve: TE.cellSystem(m, K, diag, fixed)
+            };
+          }
+          return cache.solve(rhs, fixed);
         }
         balance(T, t) {
           const m = this.mesh,
@@ -1187,9 +1235,11 @@
               }
               // The update has converged but the heat balance has not. With small time steps the CG
               // tolerance, relative to capacity × absolute temperature, is looser than the balance
-              // test, and the warm-started solve would return the same state. Tighten it.
+              // test, and the warm-started solve would return the same state. Tighten it. The banded LU
+              // of the magnetic model is exact to rounding and has no tolerance: there the next
+              // iteration only relinearizes.
               lastResidual = residual.normalized;
-              linearRtol = Math.max(linearRtol / 100, 1e-16);
+              if (!this.righiLeducActive && !b.ettingshausen) linearRtol = Math.max(linearRtol / 100, 1e-16);
             }
             const step = candidate.map((v, i) => bc.fixed.has(i) ? v : T[i] + relaxation * (v - T[i]));
             T = history ? this.anderson(history, T, candidate, step, relaxation, bc.fixed) : step;
@@ -2263,6 +2313,19 @@
           i = t.current[t.periodic ? 1 : 0];
         return {...status, voltage, resistance: !t.openCircuit && Math.hypot(i.re, i.im) > t.currentFloor ? complexRatio(voltage, i) : null};
       };
+      // Steady probe difference ΔV = V(P+) − V(P−) and R₄ = ΔV/I, at any field. A difference below the
+      // resolution of the electrical solve is rounding noise and reads as zero: conjugate gradients stop at
+      // a relative tolerance of 2E-12, which leaves about 1E-12 of the potential span between two nodes
+      // (floor 1E-9); the banded LU of the magnetic model is exact to rounding (floor 1E-12).
+      TE.fourTerminal = r => {
+        TE.assert(r.method === 'steady', 'The four-terminal readout applies to steady results.');
+        const t = TE.terminalQuantities(r),
+          raw = TE.hallVoltage(r).value,
+          span = TE.valueRange(r.voltage),
+          floor = (TE.fieldEffects(r.config).electrical ? 1e-12 : 1e-9) * Math.max(Math.abs(r.terminalVoltage), span.hi - span.lo, 1e-15),
+          voltage = Math.abs(raw) > floor ? raw : 0;
+        return {voltage, floor, resistance: !t.openCircuit && Math.abs(r.current) > t.currentFloor ? voltage / r.current : null};
+      };
       // Arrows show the current pattern Re(Ĵₙ·exp(iθ)), the field at nωt = θ. θ is the phase at which the
       // terminal current of that harmonic peaks; without one (open circuit, or a harmonic absent from the
       // terminals), it is the phase that maximizes Σ|J|². DC uses the mean field (θ = 0).
@@ -2596,9 +2659,7 @@
       } = {}) => {
         TE.assert(n >= 1 && n <= 3 && r.harmonics?.[key], 'Phase maps require a field harmonic.');
         TE.assert(Number.isFinite(relative) && relative >= 0 && Number.isFinite(absolute) && absolute >= 0, 'Invalid phase-map threshold.');
-        const raw = r.harmonics[key][n],
-          c = r.config,
-          nodal = ['temperature', 'voltage'].includes(key);
+        const raw = r.harmonics[key][n];
         let peak = 0;
         for (const z of raw) peak = Math.max(peak, Math.hypot(z.re, z.im));
         const threshold = Math.max(absolute, relative * peak);

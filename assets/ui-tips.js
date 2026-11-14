@@ -82,14 +82,26 @@
     if (el) new MutationObserver(attach).observe(el, {childList: true});
   }
 
-  // A tooltip opens when its "?" is clicked and closes on a second click, a click elsewhere, or Escape.
-  const closeAll = except => document.querySelectorAll('.tip[aria-expanded="true"]').forEach(b => { if (b !== except) b.setAttribute('aria-expanded', 'false'); });
+  // A tooltip opens when its "?" is clicked and closes on a second click, a click elsewhere, tab switch, or Escape.
+  const openTips = () => [...document.querySelectorAll('.tip[aria-expanded="true"]')];
+  const closeAll = except => openTips().forEach(b => { if (b !== except) b.setAttribute('aria-expanded', 'false'); });
+  if (typeof app.tab === 'function') {
+    const origTab = app.tab;
+    app.tab = function tabWithTipsClosed(...args) {
+      closeAll();
+      return origTab.apply(this, args);
+    };
+  }
+  const presetHelp = document.getElementById('presetHelp');
+  const clearPresetDismiss = () => presetHelp?.removeAttribute('data-dismissed');
+  presetHelp?.addEventListener('pointerenter', clearPresetDismiss);
+  presetHelp?.addEventListener('focusin', clearPresetDismiss);
   document.addEventListener('click', e => {
     if (app.busy) return;
     const tip = e.target.closest?.('.tip');
     closeAll(tip);
     if (!tip) return;
-    e.preventDefault();
+    e.preventDefault?.();
     const open = tip.getAttribute('aria-expanded') !== 'true';
     tip.setAttribute('aria-expanded', String(open));
     if (!open) return;
@@ -99,5 +111,18 @@
     if (r.right > innerWidth - 8) tt.classList.add('flip');
     if (r.bottom > innerHeight - 40) tt.classList.add('up');
   });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAll(); });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    let closed = false;
+    if (openTips().length) {
+      closeAll();
+      closed = true;
+    }
+    if (presetHelp && !presetHelp.hidden && !presetHelp.hasAttribute('data-dismissed') &&
+        (presetHelp.matches?.(':hover') || presetHelp.contains?.(document.activeElement))) {
+      presetHelp.setAttribute('data-dismissed', '');
+      closed = true;
+    }
+    if (closed) e.preventDefault?.();
+  });
 })(globalThis.TEApp);

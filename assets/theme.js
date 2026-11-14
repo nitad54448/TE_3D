@@ -72,13 +72,6 @@
         applyTheme(nextTheme);
       });
     }
-
-    // Deep link parameters: ?tab=geometry&run=1
-    // Classic scripts have finished by DOMContentLoaded; a failed startup must not leave a polling timer.
-    const app = globalThis.TEApp, targetTab = urlParams.get('tab');
-    if (!globalThis.TE_APP_READY || !app) return;
-    if (['materials', 'geometry', 'boundaries', 'solver', 'results'].includes(targetTab)) app.tab(targetTab);
-    if (urlParams.get('run') === '1') app.runSimulation();
   });
 
   system?.addEventListener?.('change', event => {

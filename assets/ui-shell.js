@@ -14,7 +14,9 @@
     const mats = document.querySelectorAll('[data-material]').length;
     set('materials', mats ? `${mats} defined · 300 K` : '');
     set('geometry', val('nx') && val('ny') ? `${val('nx')} × ${val('ny')} · ${val('lx')} × ${val('ly')} mm` : '');
-    const mode = {periodic: 'AC', sweep: 'AC sweep', steady: 'DC'}[val('excitationMode')] ?? '';
+    // The solver that will run (the inferred mode), not the selector: AC with a zero peak solves DC, and
+    // a thermal AC peak makes a DC electrical drive periodic.
+    const mode = val('excitationMode') === 'sweep' ? 'AC sweep' : {periodic: 'AC', steady: 'DC'}[val('mode')] ?? '';
     set('boundaries', mode ? `${mode} · Bz ${val('magneticField') || 0} T` : '');
     set('solver', $('solverMethod')?.textContent.trim() ?? '');
     const state = $('badge')?.textContent.trim().toLowerCase() ?? '';
@@ -41,21 +43,17 @@
   observe('cycleMetric'); // changes whenever a result is displayed or cleared
   document.addEventListener('change', e => { if (e.target?.id === 'excitationMode') app.updateShell(); });
 
-  // Vertical tablist: Up/Down move between steps (Left/Right are handled in app.js).
+  // Keep ARIA orientation matched to the CSS layout (vertical rail > 860px, horizontal bar <= 860px).
   const tabs = () => [...document.querySelectorAll('[role=tab]')];
-  document.querySelector('.tabs')?.addEventListener('keydown', e => {
-    if (app.busy) return;
-    const all = tabs(), i = all.indexOf(document.activeElement);
-    if (i < 0 || !['ArrowDown', 'ArrowUp'].includes(e.key)) return;
-    e.preventDefault();
-    const next = all[(i + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length];
-    app.tab(next.dataset.tab);
-    next.focus();
-  });
+  const narrow = typeof matchMedia === 'function' ? matchMedia('(max-width: 860px)') : null;
+  const syncOrientation = () => document.querySelector('.tabs')?.setAttribute('aria-orientation', narrow?.matches ? 'horizontal' : 'vertical');
+  syncOrientation();
+  narrow?.addEventListener?.('change', syncOrientation);
 
   const typing = () => /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName ?? '');
   const help = $('shortcutHelp');
   $('helpButton')?.addEventListener('click', () => help?.showModal?.());
+  help?.addEventListener('click', e => { if (e.target === help) help.close?.(); });
   document.addEventListener('keydown', e => {
     if (app.busy || help?.open) return;
     if (e.altKey && !e.ctrlKey && !e.metaKey && /^[1-5]$/.test(e.key)) {

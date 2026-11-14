@@ -184,8 +184,21 @@ async function until(fn, label, ms = 20000) {
     })()`);
     await click('#run'); await until(idle, 'two-frequency sweep');
     assert(await evaluate('TEApp.sweepResult.results.length === 2 && document.getElementById("badge").textContent === "SWEEP COMPLETE"'));
+    // In Sweep mode on the Solver tab, the entire single-frequency tooltip wrapper is hidden (no orphaned "?" or input).
+    await click('#tab-solver');
+    assert(await evaluate('document.getElementById("singleFrequencyLabel").closest(".field-with-tip").offsetParent === null && document.getElementById("frequency").offsetParent === null'));
+    // Opening the log drawer with L and pressing Escape closes it and restores focus to #logToggle; backdrop click closes #shortcutHelp.
+    await command('Input.dispatchKeyEvent', {type: 'keyDown', key: 'l', text: 'l'});
+    assert(await evaluate('!document.getElementById("logDrawer").hidden'));
+    await command('Input.dispatchKeyEvent', {type: 'keyDown', key: 'Escape'});
+    assert(await evaluate('document.getElementById("logDrawer").hidden && document.activeElement.id === "logToggle"'));
+    await click('#helpButton');
+    assert(await evaluate('document.getElementById("shortcutHelp").open'));
+    await command('Input.dispatchMouseEvent', {type: 'mousePressed', button: 'left', clickCount: 1, x: 5, y: 5});
+    await command('Input.dispatchMouseEvent', {type: 'mouseReleased', button: 'left', clickCount: 1, x: 5, y: 5});
+    assert(await evaluate('!document.getElementById("shortcutHelp").open'));
     await noErrors(page);
-    passed('real AC sweep completion and UI release');
+    passed('real AC sweep completion, hidden single-frequency wrapper, Escape log close and backdrop dialog close');
 
     const autorun = await open('?run=1&tab=geometry');
     await until(() => autorun.evaluate('Boolean(TEApp.result) && !TEApp.busy && !TEApp.worker'), 'URL autorun');

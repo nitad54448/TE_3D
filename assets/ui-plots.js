@@ -20,21 +20,36 @@
     let w = boxW,
       h = boxH;
     if (w / h > c.lx / c.ly) w = h * c.lx / c.ly;else h = w * c.ly / c.lx;
+    // Clamp extreme aspect ratios so thin-film or tall-column cross-sections remain clickable and legible.
+    const minSpan = Math.min(20, boxW, boxH),
+      scaled = w < minSpan || h < minSpan;
+    if (w < minSpan) w = minSpan;
+    if (h < minSpan) h = minSpan;
     const left = 50 + gutter + (boxW - w) / 2,
       top = 22 + gutter + (boxH - h) / 2;
     ctx.fillStyle = app.plotColors().text;
     ctx.font = '10px monospace';
-    ctx.textAlign = 'center';
     let tickWidth = 0;
-    for (let i = 0; i <= 4; i++) {
-      ctx.fillText(app.fmt(c.lx * 1000 * i / 4), left + w * i / 4, top + h + 19);
-      ctx.textAlign = 'right';
+    const xSteps = w < 140 ? [0, 4] : [0, 1, 2, 3, 4],
+      ySteps = h < 64 ? [0, 4] : [0, 1, 2, 3, 4];
+    for (const i of xSteps) {
+      const label = app.fmt(c.lx * 1000 * i / 4);
+      if (w < 48) {
+        ctx.textAlign = i === 0 ? 'right' : 'left';
+        ctx.fillText(label, i === 0 ? left - 2 : left + w + 2, top + h + 19);
+      } else {
+        ctx.textAlign = 'center';
+        ctx.fillText(label, left + w * i / 4, top + h + 19);
+      }
+    }
+    ctx.textAlign = 'right';
+    for (const i of ySteps) {
       const yTick = app.fmt(c.ly * 1000 * i / 4);
       tickWidth = Math.max(tickWidth, ctx.measureText(yTick).width);
       ctx.fillText(yTick, left - 9, top + h - h * i / 4 + 3);
-      ctx.textAlign = 'center';
     }
-    ctx.fillText('x · mm', left + w / 2, top + h + 37);
+    ctx.textAlign = 'center';
+    ctx.fillText('x · mm' + (scaled ? ' (display aspect scaled)' : ''), left + w / 2, top + h + 37);
     ctx.textAlign = 'left';
     ctx.fillText('y · mm', left - 25, top - 9);
     return {
@@ -137,17 +152,21 @@
     ctx.save();
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'center';
+    ctx.lineJoin = 'round';
     for (const [node, label] of [[plus, 'P+'], [minus, 'P−']]) {
       const i = node % (c.nx + 1),
         j = Math.floor(node / (c.nx + 1)),
         x = left + i / c.nx * w,
-        y = top + h - j / c.ny * h;
+        y = top + h - j / c.ny * h,
+        ty = j < c.ny / 2 ? y - 8 : y + 16;
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#142f43';
       ctx.fillStyle = '#ffd166';
       ctx.fillRect(x - 4, y - 4, 8, 8);
       ctx.strokeRect(x - 4, y - 4, 8, 8);
-      ctx.fillText(label, x, j < c.ny / 2 ? y - 8 : y + 16);
+      ctx.lineWidth = 3;
+      ctx.strokeText?.(label, x, ty);
+      ctx.fillText(label, x, ty);
     }
     ctx.restore();
   };

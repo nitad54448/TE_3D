@@ -158,6 +158,13 @@
     hallOption.disabled = !hall.active;
     hallOption.title = hall.reason;
     if (!hall.active && app.$('bodeQuantity').value === 'hallVoltage') app.$('bodeQuantity').value = 'terminalVoltage';
+    const openCircuit = app.sweepResult.config.electrical.kind === 'open_circuit',
+      impOption = app.$('bodeQuantity').querySelector('option[value="impedance"]');
+    if (impOption) {
+      impOption.disabled = openCircuit;
+      impOption.title = openCircuit ? 'Open circuit: terminal current is zero, so impedance is undefined.' : '';
+    }
+    if (openCircuit && app.$('bodeQuantity').value === 'impedance') app.$('bodeQuantity').value = 'terminalVoltage';
     const rs = app.sweepResult.results,
       imp = app.$('bodeQuantity').value === 'impedance';
     if (imp) {

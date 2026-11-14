@@ -192,9 +192,12 @@
     app.$('periodicSettings').hidden = mode === 'steady';
     app.$('periodicNote').hidden = mode === 'steady';
     for (const id of ['frequency', 'samples', 'maxPeriods']) app.$(id).disabled = mode === 'steady';
-    const sweep = app.$('excitationMode').value === 'sweep';
+    const sweep = app.$('excitationMode').value === 'sweep',
+      freqLabel = app.$('singleFrequencyLabel'),
+      freqWrap = freqLabel.closest?.('.field-with-tip');
     app.$('sweepSettings').hidden = !sweep;
-    app.$('singleFrequencyLabel').hidden = sweep;
+    freqLabel.hidden = sweep;
+    if (freqWrap) freqWrap.hidden = sweep;
     app.$('frequency').disabled = sweep || mode === 'steady';
     for (const id of ['sweepMin', 'sweepMax', 'sweepPoints', 'sweepSpacing']) app.$(id).disabled = !sweep;
     // A sweep needs an AC excitation; without one, say so instead of naming a periodic method whose settings are hidden.
@@ -263,12 +266,20 @@
       e.removeAttribute('title');
     });
     const issues = [];
+    // Card fields are named by their model path (materials.1.nernst, thermal.left.value.bias), like the
+    // issues of TE.validate2DConfig, never by an element id: the tooltips give some of them generated ids.
+    const fieldPath = e => {
+      const key = e.dataset.key, card = e.closest?.('[data-material]'), side = e.closest?.('[data-side]');
+      if (key && card) return `materials.${card.dataset.material}.${key}`;
+      if (key && side) return `thermal.${side.dataset.side}.${key === 'h' ? 'h' : 'value.' + key}`;
+      return e.id || key;
+    };
     for (const e of controls.filter(e => e.type === 'number' && !e.disabled)) {
       try {
         TE.readNumberInput(e);
       } catch {
         issues.push({
-          path: e.id || e.dataset.key,
+          path: fieldPath(e),
           message: 'Enter a finite numerical value.',
           elements: [e]
         });
@@ -403,6 +414,7 @@
     app.drawGeometry();
     app.dirty();
     app.validateUI(); // the electrode checks depend on the material map
+    app.history?.('Edit', `Filled domain with ${app.config.materials[app.selected]?.name || 'selected material'}`);
   };
   app.updateMaterialCap = () => {
     const atLimit = app.config.materials.length >= 12;
@@ -429,6 +441,7 @@
           });
         });
       }
+      const removed = app.config.materials[index]?.name || `Material ${index + 1}`;
       app.config.materials.splice(index, 1);
       for (let k = 0; k < app.config.materialMap.length; k++) {
         const m = app.config.materialMap[k];
@@ -441,6 +454,7 @@
       app.drawGeometry();
       app.dirty();
       app.validateUI();
+      app.history?.('Edit', `Removed material ${removed}`);
     } catch (e) {
       app.notice(e.message, true);
     }
@@ -468,6 +482,7 @@
       app.materialsForm();
       app.dirty();
       app.validateUI();
+      app.history?.('Edit', 'Added material New material');
     } catch (e) {
       app.notice(e.message, true);
     }
@@ -512,6 +527,7 @@
       app.drawGeometry();
       app.dirty();
       app.validateUI();
+      app.history?.('Edit', `Imported material ${material.name}`);
     } catch (error) {
       if (!app.busy) app.notice(error.message, true);
     } finally {
@@ -745,6 +761,11 @@
     if (app.busy || app.worker || app.importingProject) return;
     const token = ++app.presetToken,
       p = app.$('preset').value,
+      presetLabel = app.$('preset').selectedOptions?.[0]?.textContent ?? p,
+      applyPresetBode = name => {
+        app.$('bodeQuantity').value = name === 'rc' ? 'impedance' : 'terminalVoltage';
+        app.$('bodeRepresentation').value = name === 'rc' ? 'complex' : 'polar';
+      },
       build = {dc: app.jouleContactsConfig, module: app.moduleConfig, rc: app.rcConfig, 'hall-pge': app.hallPGeConfig, film: app.filmConfig}[p];
     if (build) {
       try {
@@ -761,11 +782,9 @@
         app.fill();
         app.dirty();
         app.showPreset(p);
-        // The RC example is about the terminal impedance: show it as Real/Imaginary parts.
-        if (p === 'rc') {
-          app.$('bodeQuantity').value = 'impedance';
-          app.$('bodeRepresentation').value = 'complex';
-        }
+        // The RC example is about the terminal impedance (Real/Imaginary); other examples reset Bode defaults.
+        applyPresetBode(p);
+        app.history?.('Load', 'Example: ' + presetLabel);
       } catch (e) {
         if (token !== app.presetToken) return;
         app.$('preset').value = app.presetShown;
@@ -839,5 +858,7 @@
     app.fill();
     app.dirty();
     app.showPreset(p);
+    applyPresetBode(p);
+    app.history?.('Load', 'Example: ' + presetLabel);
   };
 })(globalThis.TEApp);

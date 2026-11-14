@@ -102,6 +102,7 @@
         data: 'Thermoelectric Lab project without results: model, materials, boundary conditions and solver settings.\nOpen it with Import project and run it.\n'
       }]);
       app.download(app.projectFileName(), zip, 'application/zip');
+      app.history?.('Save', 'Project saved (model only)');
       app.$('status').textContent = app.result
         ? 'Project saved without results: the inputs changed after the last run, so only the current model and settings were saved.'
         : 'Project saved without results: the model and all settings. Import project opens it ready to run.';
@@ -117,6 +118,7 @@
     const reportWindow = window.open('', '_blank');
     if (!reportWindow) {
       app.$('exportStatus').textContent = 'Allow pop-ups for this page, then try the PDF report again.';
+      app.log?.('warn', 'project', 'Allow pop-ups for this page, then try the PDF report again.');
       return;
     }
     try {
@@ -128,9 +130,11 @@
       reportWindow.document.write(report.html);
       reportWindow.document.close();
       app.$('exportStatus').textContent = 'Full report opened. Click Save as PDF / Print and select Save as PDF.';
+      app.log?.('ok', 'project', 'Full PDF report opened.');
     } catch (e) {
       reportWindow.close();
       app.$('exportStatus').textContent = 'Report export failed: ' + e.message;
+      app.log?.('error', 'project', 'Report export failed: ' + e.message);
     }
   };
   app.exportZip = async () => {
@@ -167,6 +171,7 @@
       const zip = await TE.zipFiles(files);
       TE.assert(zip.size <= TE.projectLimits.archiveBytes, 'Project ZIP exceeds the 2 GiB import limit. Reduce retained sweep points or time steps.');
       app.download(app.projectFileName(), zip, 'application/zip');
+      app.history?.('Save', savedSweep ? 'Project saved (sweep + results)' : 'Project saved (model + results)');
       app.$('exportStatus').textContent = 'Project ZIP downloaded. Use Import project to reopen the model, saved results and view. Reports, SVG figures and CSV data are also included.';
       app.$('status').textContent = 'Project saved with its results. Import project reopens it without recalculation.';
     } catch (e) {

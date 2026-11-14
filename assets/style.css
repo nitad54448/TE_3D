@@ -204,7 +204,7 @@ kbd { font: 11px var(--font-mono); padding: 1px 6px; border: 1px solid var(--lin
   visibility: hidden;
 }
 :root[data-theme="light"] .preset-tooltip { color: #f3f8f9; }
-.preset-help:hover .preset-tooltip, .preset-help:focus-within .preset-tooltip { visibility: visible; }
+.preset-help:not([data-dismissed]):hover .preset-tooltip, .preset-help:not([data-dismissed]):focus-within .preset-tooltip { visibility: visible; }
 
 /* Workflow rail */
 .rail { grid-row: 2 / 3; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
@@ -356,7 +356,7 @@ label > span { float: none; margin-left: 6px; padding: 0; background: none; bord
 label:has(> input:disabled), label:has(> select:disabled) { color: var(--disabled-text); }
 .settings { border: 0; margin: 0; padding: 0; min-width: 0; }
 .settings > label { margin-top: 12px; }
-.settings > label:first-child, .settings > label:first-of-type { margin-top: 0; }
+.settings > label:first-child { margin-top: 0; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; margin-top: 12px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 14px; margin-top: 12px; }
 .check { display: flex; align-items: center; gap: 8px; height: 28px; color: var(--text-2); }

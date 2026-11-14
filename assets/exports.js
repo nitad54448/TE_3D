@@ -17,7 +17,6 @@
   const svg = (body, h = 270) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 ${h}" role="img" font-family="Arial,sans-serif"><rect width="520" height="${h}" fill="white"/>${body}</svg>`;
   function gridSvg(r, key, n = 0, representation = 'amplitude') {
     const c = r.config,
-      nodal = ['temperature', 'voltage'].includes(key),
       geometry = key === 'materials',
       isPhase = n > 0 && representation === 'phase';
     const map = geometry ? {values: []} : TE.harmonicMap(r, key, n, representation);
@@ -28,6 +27,10 @@
     let w = 400,
       h = 150;
     if (w / h > c.lx / c.ly) w = h * c.lx / c.ly;else h = w * c.ly / c.lx;
+    const minSpan = 16,
+      scaled = w < minSpan || h < minSpan;
+    if (w < minSpan) w = minSpan;
+    if (h < minSpan) h = minSpan;
     const x = 70 + (400 - w) / 2,
       y = 35 + (150 - h) / 2;
     let b = `<text x="15" y="18" font-size="12" fill="#17394b">${esc(geometry ? 'Material map' : `${fields.find(f => f[0] === key)[1]} · ${n ? n + 'ω' : 'DC'} · ${n ? representation : key === 'J' ? 'magnitude' : 'signed mean'} · ${isPhase ? '°' : fields.find(f => f[0] === key)[2]}`)}</text>`;
@@ -42,7 +45,8 @@
       b += `<rect x="${px(x + i * w / c.nx)}" y="${px(y + (c.ny - j - 1) * h / c.ny)}" width="${px((end - i) * w / c.nx + .03)}" height="${px(h / c.ny + .03)}" fill="${fill}"/>`;
       i = end;
     }
-    b += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#555" stroke-width=".5"/><text x="${x}" y="${y + h + 15}" font-size="10">0</text><text x="${x + w}" y="${y + h + 15}" font-size="10" text-anchor="end">${esc(fmt(c.lx * 1000))} mm · x</text><text x="8" y="${y + 7}" font-size="10">${esc(fmt(c.ly * 1000))} mm</text><text x="8" y="${y + 20}" font-size="10">y ↑</text>`;
+    const xEnd = w < 70 ? `<text x="${x + w + 4}" y="${y + h + 15}" font-size="10">${esc(fmt(c.lx * 1000))} mm · x${scaled ? ' (aspect scaled)' : ''}</text>` : `<text x="${x + w}" y="${y + h + 15}" font-size="10" text-anchor="end">${esc(fmt(c.lx * 1000))} mm · x${scaled ? ' (aspect scaled)' : ''}</text>`;
+    b += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#555" stroke-width=".5"/><text x="${x}" y="${y + h + 15}" font-size="10">0</text>${xEnd}<text x="8" y="${y + 7}" font-size="10">${esc(fmt(c.ly * 1000))} mm</text><text x="8" y="${y + 20}" font-size="10">y ↑</text>`;
     for (const name of ['source', 'sink']) {
       const side = c.electrical[name + 'Side'],
         range = c.electrical[name + 'Range'],
@@ -61,7 +65,7 @@
         j = Math.floor(node / (c.nx + 1)),
         px = x + i / c.nx * w,
         py = y + h - j / c.ny * h;
-      b += `<rect x="${px - 3}" y="${py - 3}" width="6" height="6" fill="#ffd166" stroke="#142f43" stroke-width="1"/><text x="${px}" y="${j < c.ny / 2 ? py - 5 : py + 11}" font-size="8" font-weight="bold" text-anchor="middle" fill="#142f43">${label}</text>`;
+      b += `<rect x="${px - 3}" y="${py - 3}" width="6" height="6" fill="#ffd166" stroke="#142f43" stroke-width="1"/><text x="${px}" y="${j < c.ny / 2 ? py - 5 : py + 11}" font-size="8" font-weight="bold" text-anchor="middle" fill="#142f43" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round" paint-order="stroke">${label}</text>`;
     }
     if (!geometry) {
       for (let i = 0; i < 100; i++) b += `<rect x="${70 + 4 * i}" y="222" width="4.1" height="10" fill="${rgb(i / 99)}"/>`;
@@ -117,6 +121,7 @@
       hs = terminalData.voltage;
     const hall = TE.hallVoltage(r),
       hallInfo = TE.hallSummary(r),
+      four = periodic(r) ? null : TE.fourTerminal(r),
       polar = z => `${fmt(mag(z))} ∠ ${fmt(phase(z))}° (${fmt(z.re)} ${z.im < 0 ? '−' : '+'} ${fmt(Math.abs(z.im))}i)`,
       spectrum = (rows, unit, floor) => table(['Order', 'Hz', 'Magnitude ' + unit, 'Phase °', 'Real ' + unit, 'Imag ' + unit], rows.map((z, n) => [n, n * (r.frequency ?? 0), mag(z), mag(z) > floor ? phase(z) : null, z.re, z.im]));
     let terminal = (periodic(r) ? '<p>Terminal voltage U = V(source) − V(sink):</p>' : '') + spectrum(hs, 'V', 1e-16);
@@ -137,8 +142,8 @@
         terminal += add('hall-voltage', cycle(hall.history, 'Hall voltage V(P+) − V(P−) · V'));
       } else terminal += `<p>Hall voltage: not applicable. ${esc(hallInfo.reason)}</p>`;
     } else terminal += table(['Steady quantity', 'Value'], [['Probe temperature (K)', r.temperature[probe]], ['Terminal voltage (V)', r.terminalVoltage], ['Terminal current (A)', r.current], ['Electrical power absorbed (W)', r.electricalPower], ['Magnetic field Bz (T)', c.magneticField ?? 0],
-      ['Voltage probes ΔV = V(P+) − V(P−) (V)', hall.value],
-      ['Four-terminal resistance R₄ = ΔV/I (Ω)', !terminalData.openCircuit && Math.abs(r.current) > terminalData.currentFloor ? hall.value / r.current : 'Not applicable: no terminal current'],
+      ['Voltage probes ΔV = V(P+) − V(P−) (V)', four.voltage],
+      ['Four-terminal resistance R₄ = ΔV/I (Ω)', four.resistance ?? 'Not applicable: no terminal current'],
       ['Hall voltage V(P+) − V(P−) (V)', hallInfo.active ? hall.value : 'Not applicable: ' + hallInfo.reason],
       ...(hallInfo.active ? [['Hall resistance R_xy = V_H/I (Ω)', hallInfo.resistance ? hallInfo.resistance.re : 'Not applicable: no terminal current']] : [])]);
     html += page('Terminal spectrum and probe', terminal);
@@ -161,14 +166,33 @@
       probe
     };
   };
-  // Standard ZIP STORE (no external dependencies). CRC computed incrementally per Blob.
+  // Standard ZIP (no external dependencies). Entries are Deflate-compressed with the browser's own
+  // CompressionStream: results are numbers written as text, which shrink about fourfold. An entry that
+  // does not shrink, or any entry in a browser without CompressionStream, is stored. compress: false
+  // stores everything. CRC computed incrementally per Blob, over the uncompressed data.
+  async function deflated(blob) {
+    if (typeof CompressionStream !== 'function' || blob.size === 0) return null;
+    try {
+      const reader = blob.stream().pipeThrough(new CompressionStream('deflate-raw')).getReader(),
+        chunks = [];
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const packed = new Blob(chunks);
+      return packed.size < blob.size ? packed : null;
+    } catch {
+      return null; // 'deflate-raw' unsupported: store
+    }
+  }
   const crcTable = Uint32Array.from({
     length: 256
   }, (_, i) => {
     for (let j = 0; j < 8; j++) i = i & 1 ? 0xedb88320 ^ i >>> 1 : i >>> 1;
     return i >>> 0;
   });
-  TE.zipFiles = async files => {
+  TE.zipFiles = async (files, {compress = true} = {}) => {
     const enc = new TextEncoder(),
       parts = [],
       directory = [];
@@ -188,33 +212,38 @@
         for (let i = 0, n = value.length; i < n; i++) crc = crcTable[(crc ^ value[i]) & 255] ^ crc >>> 8;
       }
       crc = (crc ^ 0xffffffff) >>> 0;
+      const packed = compress ? await deflated(blob) : null,
+        body = packed ?? blob,
+        method = packed ? 8 : 0;
       const header = new Uint8Array(30 + name.length),
         v = new DataView(header.buffer);
       v.setUint32(0, 0x04034b50, true);
       v.setUint16(4, 20, true);
       v.setUint16(6, 0x800, true);
+      v.setUint16(8, method, true);
       v.setUint16(12, 33, true);
       v.setUint32(14, crc, true);
-      v.setUint32(18, blob.size, true);
+      v.setUint32(18, body.size, true);
       v.setUint32(22, blob.size, true);
       v.setUint16(26, name.length, true);
       header.set(name, 30);
-      parts.push(header, blob);
+      parts.push(header, body);
       const cd = new Uint8Array(46 + name.length),
         d = new DataView(cd.buffer);
       d.setUint32(0, 0x02014b50, true);
       d.setUint16(4, 20, true);
       d.setUint16(6, 20, true);
       d.setUint16(8, 0x800, true);
+      d.setUint16(10, method, true);
       d.setUint16(14, 33, true);
       d.setUint32(16, crc, true);
-      d.setUint32(20, blob.size, true);
+      d.setUint32(20, body.size, true);
       d.setUint32(24, blob.size, true);
       d.setUint16(28, name.length, true);
       d.setUint32(42, offset, true);
       cd.set(name, 46);
       directory.push(cd);
-      offset += header.length + blob.size;
+      offset += header.length + body.size;
       TE.assert(offset < 0xffffffff, 'Archive exceeds the ZIP32 size limit.');
     }
     const size = directory.reduce((s, a) => s + a.length, 0),
@@ -331,7 +360,7 @@
     });
     files.push({
       name: 'README.txt',
-      data: `THERMOELECTRIC LAB - COMPLETE RESULTS\n${r.converged ? 'CONVERGED' : 'UNCONVERGED - PROVISIONAL RESULTS'}\n\nmodel.json is the computed input model, not current UI edits.\nresults.json contains all retained solver outputs at full numerical precision.\nPeriodic histories cover ONLY the last saved complete cycle, not all startup cycles.\n${report ? 'report.html is the full offline report: open it and choose Save as PDF / Print.\nfigures/ contains standalone SVG maps and plots.' : 'This sweep point has no report.html or figures/: the archive root report.html and the folder of the selected point hold them.'}\nCSV values use SI units; node/cell identifiers are zero based.\nNode = j*(Nx+1)+i; cell = j*Nx+i; j=0 is the bottom.\nHistories use time within the saved cycle; terminal.csv also gives absolute time.\nHarmonics are peak complex phasors: u=U0+Re(sum(Un*exp(i*n*omega*t))).\nTerminal voltage U = V(source) - V(sink); the sink is at 0 V; positive current enters the source; absorbed power = U*I.\nterminal_harmonics.csv gives the terminal voltage and current phasors (current entering the source).\nhall_voltage_V in terminal.csv is V(P+) - V(P-) at the Hall probes; it is a Hall voltage only when Bz is nonzero and a painted material has a Hall, Nernst or Righi-Leduc coefficient (magnetic field Bz in model.json).\nDC is signed in the real column; peak is its absolute magnitude.\nPhase is undefined at zero amplitude and unreliable near numerical noise.\nCurrent magnitude is derivable from Jx/Jy.\nThe selected report probe is recorded in manifest.json.\nZIP entries are stored without compression to work offline without dependencies.\n`
+      data: `THERMOELECTRIC LAB - COMPLETE RESULTS\n${r.converged ? 'CONVERGED' : 'UNCONVERGED - PROVISIONAL RESULTS'}\n\nmodel.json is the computed input model, not current UI edits.\nresults.json contains all retained solver outputs at full numerical precision.\nPeriodic histories cover ONLY the last saved complete cycle, not all startup cycles.\n${report ? 'report.html is the full offline report: open it and choose Save as PDF / Print.\nfigures/ contains standalone SVG maps and plots.' : 'This sweep point has no report.html or figures/: the archive root report.html and the folder of the selected point hold them.'}\nCSV values use SI units; node/cell identifiers are zero based.\nNode = j*(Nx+1)+i; cell = j*Nx+i; j=0 is the bottom.\nHistories use time within the saved cycle; terminal.csv also gives absolute time.\nHarmonics are peak complex phasors: u=U0+Re(sum(Un*exp(i*n*omega*t))).\nTerminal voltage U = V(source) - V(sink); the sink is at 0 V; positive current enters the source; absorbed power = U*I.\nterminal_harmonics.csv gives the terminal voltage and current phasors (current entering the source).\nhall_voltage_V in terminal.csv is V(P+) - V(P-) at the Hall probes; it is a Hall voltage only when Bz is nonzero and a painted material has a Hall, Nernst or Righi-Leduc coefficient (magnetic field Bz in model.json).\nDC is signed in the real column; peak is its absolute magnitude.\nPhase is undefined at zero amplitude and unreliable near numerical noise.\nCurrent magnitude is derivable from Jx/Jy.\nThe selected report probe is recorded in manifest.json.\nZIP entries are Deflate-compressed by the browser itself; no external dependencies are used.\n`
     });
     return files;
   };

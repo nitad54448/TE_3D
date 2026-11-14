@@ -45,9 +45,10 @@
     const hallInfo = TE.hallSummary(r);
     app.$('fourTerminalReadout').hidden = periodic;
     if (!periodic) {
-      const dv = TE.hallVoltage(r).value;
-      app.$('fourTerminalReadout').textContent = 'Voltage probes: ΔV = V(P+) − V(P−) = ' + app.si(dv, 'V') +
-        (!terminal.openCircuit && Math.abs(iz.re) > terminal.currentFloor ? ' · Four-terminal resistance R₄ = ΔV/I = ' + app.si(dv / iz.re, 'Ω') : ' · No current: resistance is undefined.');
+      // A difference below the resolution of the electrical solve reads as zero (TE.fourTerminal).
+      const four = TE.fourTerminal(r);
+      app.$('fourTerminalReadout').textContent = 'Voltage probes: ΔV = V(P+) − V(P−) = ' + app.si(four.voltage, 'V') +
+        (four.resistance === null ? ' · No current: resistance is undefined.' : ' · Four-terminal resistance R₄ = ΔV/I = ' + app.si(four.resistance, 'Ω'));
     }
     app.$('hLabel').textContent = 'HALL VOLTAGE · ' + (periodic ? '1ω' : 'DC');
     if (!hallInfo.active) {
@@ -127,8 +128,12 @@
     app.$('probeReadout').hidden = true;
     app.$('spectrum').innerHTML = '<tr><td colspan="7">No computed result.</td></tr>';
     for (const id of ['resultCanvas', 'profileCanvas']) {
-      const canvas = app.$(id);
-      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+      const canvas = app.$(id),
+        ctx = canvas.getContext('2d');
+      ctx.save?.();
+      ctx.setTransform?.(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.restore?.();
     }
   };
   app.retainResults = function retainResults(reason) {
@@ -137,6 +142,7 @@
       return;
     }
     let text;
+    app.$('badge').className = '';
     if (app.checkpoint) {
       // Saved complete cycle of THIS run: shown, but explicitly provisional.
       app.sweepResult = null;

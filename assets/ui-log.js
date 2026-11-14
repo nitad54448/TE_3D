@@ -54,19 +54,27 @@
 
   // ---- Sources -------------------------------------------------------------------------------
   const badge = () => $('badge');
-  const levelNow = () => {
+  const levelNow = text => {
+    if (/failed:/i.test(text)) return 'error';
+    if (/did not converge|Sweep completed with \d+ unconverged/i.test(text)) return 'warn';
     const b = badge();
     if (!b) return 'info';
     if (b.classList.contains('error')) return 'error';
     if (b.classList.contains('warning') || /UNCONVERGED|STOPPED/.test(b.textContent)) return 'warn';
+    if (app.worker) return 'info';
     if (/CONVERGED|COMPLETE/.test(b.textContent)) return 'ok';
     return 'info';
   };
   const isProgress = t => /^(Frequency \d+\/\d+: |.*Cycle \d+\/\d+ ·)/.test(t);
-  const category = t => /^Mesh applied/.test(t) ? 'mesh' : /project|import|saved|ZIP|PDF|export/i.test(t) ? 'project' : app.worker ? 'run' : 'status';
+  // Run outcomes are recognized by how they start: several mention a "saved cycle" or an export, which
+  // would otherwise file them under project.
+  const category = t => /^Mesh applied/.test(t) ? 'mesh'
+    : /^(Stopped by user|Calculation |Computed successfully|Sweep completed|Frequency \d+\/\d+|Periodic state not reached|Worker error|Unable to (start|decode|process|read))/.test(t) ? 'run'
+    : /^Sweep map/.test(t) ? 'status'
+    : /project|import|saved|ZIP|PDF|export/i.test(t) ? 'project' : app.worker ? 'run' : 'status';
   const setting = () => {
     const v = id => String($(id)?.value ?? '').trim();
-    const mode = {periodic: 'AC single frequency', sweep: 'AC sweep', steady: 'DC'}[v('excitationMode')] ?? '';
+    const mode = v('excitationMode') === 'sweep' ? 'AC sweep' : (app.config?.mode ?? v('mode')) === 'periodic' ? 'AC single frequency' : 'DC';
     return `${mode}${mode.startsWith('AC single') ? ` ${v('frequency')} Hz, ${v('samples')} steps/period` : ''} · mesh ${v('nx')} × ${v('ny')} · Bz ${v('magneticField')} T`;
   };
 
@@ -76,24 +84,63 @@
     if (!text || text === lastStatus) return;
     lastStatus = text;
     if (/^Solving coupled/.test(text)) app.log('info', 'run', 'Run started: ' + setting());
-    app.log(levelNow(), category(text), text, {progress: isProgress(text)});
+    app.log(levelNow(text), category(text), text, {progress: isProgress(text)});
   };
 
-  let lastBadge = '';
+  let lastBadge = '', runActive = false;
   const onBadge = () => {
     const text = (badge()?.textContent ?? '').trim();
     if (!text || text === lastBadge) return;
     lastBadge = text;
-    if (/^(CONVERGED|UNCONVERGED|STOPPED|SWEEP|ERROR)/.test(text)) app.history('Run', `${text}${$('elapsed')?.textContent ? ' · ' + $('elapsed').textContent.trim() : ''}`);
-    else if (/^PROJECT/.test(text)) app.history('Import', text);
+    if (text === 'COMPUTING') {
+      runActive = true;
+    } else if (runActive) {
+      runActive = false;
+      if (/^(CONVERGED|UNCONVERGED|STOPPED|PREVIOUS RESULT|SWEEP|ERROR)/.test(text)) {
+        app.history('Run', `${text}${$('elapsed')?.textContent ? ' · ' + $('elapsed').textContent.trim() : ''}`);
+      }
+    }
   };
 
+  // Debounce validation boxes while the user is actively typing in a text/number input so intermediate
+  // keystrokes do not inflate the warning/error badge; flush immediately on commit (change / focusout).
+  const boxTimers = new Map(), lastBoxLogged = new Map();
+  const flushBox = (id, level, intro) => {
+    const timer = boxTimers.get(id);
+    if (timer) { clearTimeout(timer); boxTimers.delete(id); }
+    const box = $(id);
+    if (!box || box.hidden) {
+      lastBoxLogged.delete(id);
+      return;
+    }
+    const items = [...box.querySelectorAll('li')].map(li => li.textContent.trim());
+    const msg = intro + (items.length ? items.slice(0, 3).join(' | ') + (items.length > 3 ? ` (+${items.length - 3} more)` : '') : '');
+    if (lastBoxLogged.get(id) === msg) return;
+    lastBoxLogged.set(id, msg);
+    app.log(level, 'validation', msg);
+  };
   const onBox = (id, level, intro) => () => {
     const box = $(id);
-    if (!box || box.hidden) return;
-    const items = [...box.querySelectorAll('li')].map(li => li.textContent.trim());
-    app.log(level, 'validation', intro + (items.length ? items.slice(0, 3).join(' | ') + (items.length > 3 ? ` (+${items.length - 3} more)` : '') : ''));
+    if (!box || box.hidden) {
+      const timer = boxTimers.get(id);
+      if (timer) { clearTimeout(timer); boxTimers.delete(id); }
+      lastBoxLogged.delete(id);
+      return;
+    }
+    if (document.activeElement?.tagName === 'INPUT' && !/^(checkbox|color|file|range)$/i.test(document.activeElement.type ?? '')) {
+      const prev = boxTimers.get(id);
+      if (prev) clearTimeout(prev);
+      boxTimers.set(id, setTimeout(() => flushBox(id, level, intro), 450));
+    } else {
+      flushBox(id, level, intro);
+    }
   };
+  const flushAllBoxes = () => {
+    if (boxTimers.has('validationSummary')) flushBox('validationSummary', 'error', 'Invalid input: ');
+    if (boxTimers.has('validationWarnings')) flushBox('validationWarnings', 'warn', 'Check: ');
+  };
+  document.addEventListener('change', flushAllBoxes);
+  document.addEventListener('focusout', flushAllBoxes);
 
   const observe = (el, fn) => { if (el && globalThis.MutationObserver) new MutationObserver(fn).observe(el, {childList: true, characterData: true, subtree: true}); };
   observe($('status'), onStatus);
@@ -112,8 +159,11 @@
       name = c.textContent.trim() || name;
     }
     const value = el.tagName === 'SELECT' ? (el.selectedOptions?.[0]?.textContent ?? el.value).trim() : String(el.value).trim();
-    const card = el.closest('[data-material]'), side = el.closest('[data-side]');
-    const where = card ? (card.querySelector('[data-key="name"]')?.value || 'Material') + ' · ' : side ? side.dataset.side + ' side · ' : '';
+    const card = el.closest('[data-material]'), side = el.closest('[data-side]'), electrode = el.closest('.electrode');
+    const electrodeName = electrode?.querySelector('h3')?.textContent.trim().toLowerCase();
+    const where = card ? (card.querySelector('[data-key="name"]')?.value || 'Material') + ' · '
+      : side ? side.dataset.side + ' side · '
+      : electrodeName ? electrodeName + ' · ' : '';
     return `${where}${name} = ${value}${unit && el.tagName !== 'SELECT' ? ' ' + unit : ''}`;
   };
   document.addEventListener('change', e => {
@@ -121,9 +171,6 @@
     if (!el?.closest || !el.closest('.settings') || el.type === 'file') return;
     app.history('Edit', describe(el));
   });
-  $('preset')?.addEventListener('change', () => { const s = $('preset'); app.history('Load', 'Example: ' + (s.selectedOptions?.[0]?.textContent ?? s.value)); });
-  $('presetMaterial')?.addEventListener('change', () => { const s = $('presetMaterial'); if (s.value) app.history('Edit', 'Added library material ' + (s.selectedOptions?.[0]?.textContent ?? s.value)); });
-  $('save')?.addEventListener('click', () => app.history('Save', 'Project save requested'));
 
   // ---- Drawer --------------------------------------------------------------------------------
   const drawer = $('logDrawer'), toggle = $('logToggle');
@@ -157,6 +204,11 @@
   });
   document.addEventListener('keydown', e => {
     if (app.busy) return;
+    if (e.key === 'Escape' && !e.defaultPrevented && drawer && !drawer.hidden && !$('shortcutHelp')?.open) {
+      setOpen(false);
+      toggle?.focus();
+      return;
+    }
     if (e.ctrlKey || e.altKey || e.metaKey || !(e.key === 'l' || e.key === 'L')) return;
     if (/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName ?? '') || $('shortcutHelp')?.open) return;
     setOpen(drawer?.hidden ?? false);

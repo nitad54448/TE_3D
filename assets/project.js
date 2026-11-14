@@ -156,13 +156,14 @@
       let payload = blob.slice(start, start + e.compressed), bytes;
       if (e.method === 0) { assert(e.length === e.compressed, 'Stored ZIP size mismatch.'); bytes = new Uint8Array(await payload.arrayBuffer()); }
       else {
-        assert(typeof DecompressionStream === 'function', 'This browser cannot read compressed ZIPs. Use the original ZIP exported by this app.');
+        assert(typeof DecompressionStream === 'function', 'This browser cannot read compressed ZIPs. Update the browser, or open the project in a current Chrome, Edge, Firefox or Safari.');
         let stream;
         try { stream = payload.stream().pipeThrough(new DecompressionStream('deflate-raw')); }
-        catch { throw new Error('This browser cannot read compressed ZIPs. Use the original ZIP exported by this app.'); }
+        catch { throw new Error('This browser cannot read compressed ZIPs. Update the browser, or open the project in a current Chrome, Edge, Firefox or Safari.'); }
         const reader = stream.getReader(), chunks = []; let total = 0;
         try { while (true) { const {done, value} = await reader.read(); if (done) break; total += value.length; assert(total <= e.length, 'Decompressed ZIP data exceeds its declared size.'); chunks.push(value); } }
-        catch (error) { await reader.cancel().catch(() => {}); throw error; }
+        // A damaged Deflate stream fails inside the browser with a TypeError: report it as corrupt data.
+        catch (error) { await reader.cancel().catch(() => {}); throw error?.name === 'TypeError' ? new Error('Corrupt archive data: ' + name) : error; }
         assert(total === e.length, 'Decompressed ZIP size mismatch.');
         bytes = new Uint8Array(total); let at = 0; for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
       }
