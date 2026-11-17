@@ -58,14 +58,9 @@
       const pts = vertical ? [x + (side === 'right' ? w : 0), y + h * (1 - a), x + (side === 'right' ? w : 0), y + h * (1 - d)] : [x + w * a, y + (side === 'bottom' ? h : 0), x + w * d, y + (side === 'bottom' ? h : 0)];
       b += `<line x1="${pts[0]}" y1="${pts[1]}" x2="${pts[2]}" y2="${pts[3]}" stroke="${name === 'source' ? '#111' : '#c23c91'}" stroke-width="3"/>`;
     }
-    // Hall probes P+ and P− (yellow squares), labelled on the side facing the domain interior.
-    const probes = TE.hallProbeNodes(c);
-    for (const [node, label] of [[probes.plus, 'P+'], [probes.minus, 'P−']]) {
-      const i = node % (c.nx + 1),
-        j = Math.floor(node / (c.nx + 1)),
-        px = x + i / c.nx * w,
-        py = y + h - j / c.ny * h;
-      b += `<rect x="${px - 3}" y="${py - 3}" width="6" height="6" fill="#ffd166" stroke="#142f43" stroke-width="1"/><text x="${px}" y="${j < c.ny / 2 ? py - 5 : py + 11}" font-size="8" font-weight="bold" text-anchor="middle" fill="#142f43" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round" paint-order="stroke">${label}</text>`;
+    // Hall probes and labels use the same collision rule as the interactive maps.
+    for (const {label, x: px, y: py, tx, ty, anchor} of TE.hallProbeLayout(c, {left: x, top: y, w, h}, {fontSize: 8, lowerOffset: -5, upperOffset: 11})) {
+      b += `<rect x="${px - 3}" y="${py - 3}" width="6" height="6" fill="#ffd166" stroke="#142f43" stroke-width="1"/><text x="${tx}" y="${ty}" font-size="8" font-weight="bold" text-anchor="${anchor}" fill="#142f43" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round" paint-order="stroke">${label}</text>`;
     }
     if (!geometry) {
       for (let i = 0; i < 100; i++) b += `<rect x="${70 + 4 * i}" y="222" width="4.1" height="10" fill="${rgb(i / 99)}"/>`;

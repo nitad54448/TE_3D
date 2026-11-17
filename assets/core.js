@@ -666,6 +666,31 @@
       }
       // The one explanation of a failed electrical solve, with or without magnetic field.
       TE.electricalSolveError = error => new Error(`Electrical solve failed (${error.message}) Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E14), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.`);
+      TE.electricalConnectionMessage = 'Source and sink have no conducting path within double-precision resolution (conductivity contrast beyond about 1E14). The terminal voltage cannot be resolved. Connect the electrodes through conducting material or reduce the conductivity contrast; a small leakage conductivity does not imply zero open-circuit voltage.';
+      // The complete rectangular nodal graph is connected. Discard only links beyond the same
+      // conductivity contrast used by electrode validation, then test the remaining graph. Links
+      // sharing a corner node and nodes tied together by an equipotential electrode do connect.
+      TE.hasResolvedElectricalPath = (nodeCount, source, sink, visitLinks) => {
+        let best = 0, least = Infinity;
+        visitLinks((a, b, sigma) => { best = Math.max(best, sigma); least = Math.min(least, sigma); });
+        const floor = best * 1e-14;
+        if (least >= floor) return true;
+        const parent = Int32Array.from({length: nodeCount}, (_, i) => i), rank = new Uint8Array(nodeCount);
+        const find = i => {
+          while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+          return i;
+        };
+        const join = (a, b) => {
+          a = find(a); b = find(b);
+          if (a === b) return;
+          if (rank[a] < rank[b]) [a, b] = [b, a];
+          parent[b] = a;
+          if (rank[a] === rank[b]) rank[a]++;
+        };
+        for (const nodes of [source, sink]) for (const node of nodes) join(nodes[0], node);
+        visitLinks((a, b, sigma) => { if (sigma >= floor) join(a, b); });
+        return find(source[0]) === find(sink[0]);
+      };
       // Second-law limit of the magnetic model. With the Peltier tensor T·(α + N·B·R) (Onsager), the entropy
       // production is T·ṡ = ρ′|J|² + 2·N·B·J·(R∇T) + κ|∇T|²/T: the Seebeck and Hall terms cancel. It stays
       // nonnegative for every J and ∇T only while the Ettingshausen figure of merit
@@ -784,8 +809,17 @@
             flux
           };
         }
+        checkElectricalConnection(p) {
+          if (this.electrical.kind === 'voltage') return;
+          const m = this.mesh;
+          if (!TE.hasResolvedElectricalPath(m.n, this.source, this.sink,
+            visit => m.links.forEach((link, k) => visit(link.a, link.b, 1 / p[k].rho)))) {
+            throw new Error(TE.electricalConnectionMessage);
+          }
+        }
         electric(T, p, t) {
           if (this.hallActive) return this.magneticElectric(T, p, t);
+          this.checkElectricalConnection(p);
           const m = this.mesh,
             e = this.electrical,
             g = p.map(v => v.g),
@@ -861,6 +895,7 @@
         // The operator is non-symmetric, so the base and unit problems share one banded LU factorization.
         // Terminal current: I = Σ I_k·Δu_k holds for any currents that satisfy KCL, symmetric or not.
         magneticElectric(T, p, t) {
+          this.checkElectricalConnection(p);
           const m = this.mesh,
             e = this.electrical,
             B = this.B,
@@ -1723,8 +1758,10 @@
               add(p + '.value.bias', msg);
               if (periodic) add(p + '.value.amplitude', msg);
             } else {
-              probeTemperatures.add(low);
-              probeTemperatures.add(high);
+              // Convection specifies the ambient, not the solid temperature. Material laws are
+              // evaluated only within the solid's operating envelope; runtime checks still apply.
+              probeTemperatures.add(Math.max(1, Math.min(TE.resultLimits.temperature, low)));
+              probeTemperatures.add(Math.max(1, Math.min(TE.resultLimits.temperature, high)));
             }
           }
         }
@@ -1883,6 +1920,19 @@
                 for (const jj of [j - 1, j]) for (const ii of [i - 1, i]) if (ii >= 0 && jj >= 0 && ii < c.nx && jj < c.ny) touching = Math.max(touching, sigma[c.materialMap[jj * c.nx + ii]]);
               }
               if (Number.isFinite(best) && touching < 1e-14 * best) add('electrical.' + name + 'Range', `The ${name} electrode touches only near-insulating material (σ ≤ ${touching.toPrecision(3)} S/m, against ${best.toPrecision(3)} S/m elsewhere). Place it on a conductor.`);
+            }
+            const drive = typeof e.value === 'number' ? e.value : e.value?.bias ?? 0,
+              peak = periodic && typeof e.value === 'object' ? e.value?.amplitude ?? 0 : 0;
+            if (e.kind === 'current' && (drive !== 0 || peak !== 0) && !errors.some(issue => issue.path.startsWith('electrical'))) {
+              const stride = c.nx + 1;
+              const connected = TE.hasResolvedElectricalPath(stride * (c.ny + 1), contacts.source, contacts.sink, visit => {
+                for (let j = 0; j < c.ny; j++) for (let i = 0; i < c.nx; i++) {
+                  const a = j * stride + i, s = sigma[c.materialMap[j * c.nx + i]];
+                  visit(a, a + 1, s); visit(a + stride, a + stride + 1, s);
+                  visit(a, a + stride, s); visit(a + 1, a + stride + 1, s);
+                }
+              });
+              if (!connected) add('electrical', TE.electricalConnectionMessage);
             }
           }
         }
@@ -2255,6 +2305,23 @@
           harmonics: r.harmonics.voltage.map(row => ({re: row[plus].re - row[minus].re, im: row[plus].im - row[minus].im}))
         };
       };
+      // Shared canvas/SVG label placement. Thin strips can put inward-facing labels on top of
+      // each other; place those labels on opposite horizontal sides of their markers instead.
+      TE.hallProbeLayout = (c, {left, top, w, h}, {fontSize = 10, lowerOffset = -8, upperOffset = 16} = {}) => {
+        const {plus, minus} = TE.hallProbeNodes(c);
+        const markers = [[plus, 'P+'], [minus, 'P−']].map(([node, label]) => {
+          const i = node % (c.nx + 1), j = Math.floor(node / (c.nx + 1)),
+            x = left + i / c.nx * w, y = top + h - j / c.ny * h;
+          return {label, x, y, tx: x, ty: y + (j < c.ny / 2 ? lowerOffset : upperOffset), anchor: 'middle'};
+        });
+        const [a, b] = markers;
+        if (Math.abs(a.ty - b.ty) < fontSize + 4 && Math.abs(a.tx - b.tx) < 3 * fontSize) {
+          const ordered = a.x <= b.x ? [a, b] : [b, a];
+          ordered[0].tx -= 8; ordered[0].anchor = 'end';
+          ordered[1].tx += 8; ordered[1].anchor = 'start';
+        }
+        return markers;
+      };
       // Field-induced transport in the painted materials, by the solver's own activation rule (Solver2D:
       // hallActive, nernstActive, righiLeducActive). Bz = 0 or all-zero coefficients solve exactly the 2D model.
       TE.fieldEffects = c => {
@@ -2566,11 +2633,18 @@
           if (phase !== null && unwrap && previous !== null) phase += 360 * Math.round((previous - phase) / 360);
           // Points without a phase (below threshold or unconverged) keep the last valid phase as reference.
           if (phase !== null) previous = phase;
+          // Cartesian components exist even at zero amplitude. Rotate the original phasor without
+          // passing through the thresholded/wrapped phase; an invalid reference still excludes them.
+          const theta = n * Math.atan2(ref.im, ref.re), cos = Math.cos(theta), sin = Math.sin(theta),
+            complex = magnitude !== null && !reason,
+            re = complex ? z.re / divisor : 0, im = complex ? z.im / divisor : 0;
           return {
             frequency: r.frequency,
             outputFrequency: n * r.frequency,
             magnitude,
             phase,
+            real: complex ? re * cos + im * sin : null,
+            imag: complex ? im * cos - re * sin : null,
             unit,
             rawMagnitude: a,
             referenceMagnitude: refMag,
@@ -2582,11 +2656,9 @@
           };
         });
       };
-      // real_part and imag_part are magnitude·cos(phase) and magnitude·sin(phase), in the magnitude unit.
+      // Cartesian columns retain valid tiny/zero outputs even when the phase column is blank.
       TE.bodeCsv = rows => ['frequency_Hz,output_frequency_Hz,magnitude,unit,phase_deg,raw_magnitude,reference_magnitude,converged,node_or_cell,x_m,y_m,status,real_part,imag_part', ...rows.map(r => {
-        const complex = r.magnitude !== null && r.phase !== null,
-          rad = complex ? r.phase * Math.PI / 180 : 0;
-        return [r.frequency, r.outputFrequency, r.magnitude, r.unit, r.phase, r.rawMagnitude, r.referenceMagnitude, r.converged, r.nodeOrCell, r.x_m, r.y_m, r.reason, complex ? r.magnitude * Math.cos(rad) : null, complex ? r.magnitude * Math.sin(rad) : null].map(v => v == null ? '' : '"' + String(v).replace(/"/g, '""') + '"').join(',');
+        return [r.frequency, r.outputFrequency, r.magnitude, r.unit, r.phase, r.rawMagnitude, r.referenceMagnitude, r.converged, r.nodeOrCell, r.x_m, r.y_m, r.reason, r.real, r.imag].map(v => v == null ? '' : '"' + String(v).replace(/"/g, '""') + '"').join(',');
       })].join('\n');
     })(globalThis.TE);
 

@@ -119,6 +119,7 @@ globalThis.TEApp = {};
   };
   app.exporting = false;
   app.inputsChanged = false;
+  app.editRevision = 0; // detects edits while an asynchronous project snapshot is being written
   app.geometryFrame = 0;
   app.presetToken = 0;
   app.timer = undefined;

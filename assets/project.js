@@ -28,6 +28,7 @@
     const keys = Object.keys(a);
     return keys.length === Object.keys(b).length && keys.every(k => Object.hasOwn(b, k) && same(a[k], b[k]));
   };
+  TE.sameValue = same;
   // Project file format version written by exports and required on import.
   TE.projectVersion = 3;
   TE.checkEditorModel = c => {

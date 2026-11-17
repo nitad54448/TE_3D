@@ -200,6 +200,31 @@ async function until(fn, label, ms = 20000) {
     await noErrors(page);
     passed('real AC sweep completion, hidden single-frequency wrapper, Escape log close and backdrop dialog close');
 
+    await click('#tab-results');
+    await input('#bodeReference', 'time'); await input('#bodeFloor', 1); await input('#bodeRepresentation', 'complex');
+    assert(await evaluate(`document.getElementById('bodeFloor').disabled && document.getElementById('bodeUnwrap').disabled &&
+      document.querySelectorAll('#bodeMagnitude circle[data-bode-point]').length === 2 && document.querySelectorAll('#bodePhase circle[data-bode-point]').length === 2`));
+    await evaluate(`TEApp.notice('Project import failed: test recovery', true)`);
+    const warningCount = await evaluate('document.getElementById("logCount").textContent');
+    await input('#sweepPoint', 0);
+    assert(await evaluate('document.getElementById("badge").textContent === "SWEEP COMPLETE" && !document.getElementById("badge").classList.contains("error")'));
+    await evaluate(`(() => {
+      const zipFiles = TE.zipFiles;
+      TE.zipFiles = files => new Promise((resolve, reject) => {
+        __smoke.releaseSave = async () => { TE.zipFiles = zipFiles; try {resolve(await zipFiles(files));} catch (e) {reject(e);} };
+      });
+      TEApp.download = (name, blob) => {__smoke.savedZip = blob;};
+      __smoke.saving = TEApp.saveProject();
+    })()`);
+    await until(() => evaluate('Boolean(__smoke.releaseSave)'), 'pending ZIP save');
+    assert(await evaluate('TEApp.exporting && document.getElementById("save").disabled && document.getElementById("preset").disabled && document.getElementById("exportZip").disabled && document.getElementById("status").textContent.startsWith("Preparing ")'));
+    await evaluate('TEApp.validateUI()'); assert(await evaluate('document.getElementById("save").disabled'));
+    await evaluate('__smoke.releaseSave(); __smoke.saving');
+    assert(await evaluate('__smoke.savedZip instanceof Blob && !TEApp.exporting && !document.getElementById("save").disabled && !document.getElementById("preset").disabled'));
+    assert.equal(await evaluate('document.getElementById("logCount").textContent'), warningCount);
+    await noErrors(page);
+    passed('Cartesian Bode below the phase threshold, error recovery and locked asynchronous project saves');
+
     const autorun = await open('?run=1&tab=geometry');
     await until(() => autorun.evaluate('Boolean(TEApp.result) && !TEApp.busy && !TEApp.worker'), 'URL autorun');
     assert(await autorun.evaluate('__smoke.workers === 1 && document.getElementById("badge").textContent === "CONVERGED" && !("calculating" in document.documentElement.dataset)'));

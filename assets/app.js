@@ -7,6 +7,7 @@
   };
   app.dirty = function dirty() {
     if (app.worker) return;
+    app.editRevision++;
     app.presetToken++;
     app.showPreset('custom'); // the model no longer matches the loaded example
     // Exports stay disabled until a new result is displayed, including while browsing sweep points.

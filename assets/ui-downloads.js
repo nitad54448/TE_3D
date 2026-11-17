@@ -84,11 +84,23 @@
   // Save project is always available. When the displayed results belong to the current inputs it saves
   // the complete project; otherwise (nothing computed, or inputs edited since) the model and settings only.
   app.saveProject = () => app.result && !app.inputsChanged ? app.exportZip() : app.exportModelProject();
+  app.setProjectExporting = value => {
+    app.exporting = value;
+    if (value) {
+      app.presetToken++; // invalidate any example whose materials are still loading
+      if (app.presetShown !== undefined) app.$('preset').value = app.presetShown;
+      for (const id of ['save', 'run', 'exportZip', 'preset']) app.$(id).disabled = true;
+    } else {
+      app.$('preset').disabled = Boolean(app.busy || app.worker || app.importingProject);
+      app.validateUI(); // use the current inputs, including any edits made while saving
+      app.$('exportZip').disabled = app.$('exportMenuButton').disabled;
+    }
+  };
   app.exportModelProject = async () => {
     if (app.exporting || app.importingProject || app.worker) return;
-    app.exporting = true;
-    const wasSaveDisabled = app.$('save').disabled;
-    app.$('save').disabled = true;
+    app.setProjectExporting(true);
+    const savedRevision = app.editRevision;
+    app.$('status').textContent = 'Preparing model project archive…';
     try {
       const model = TE.checkEditorModel(JSON.parse(JSON.stringify(app.applyGeometry())));
       const zip = await TE.zipFiles([{
@@ -103,14 +115,16 @@
       }]);
       app.download(app.projectFileName(), zip, 'application/zip');
       app.history?.('Save', 'Project saved (model only)');
-      app.$('status').textContent = app.result
+      app.clearNoticeError();
+      app.$('status').textContent = app.editRevision !== savedRevision
+        ? 'Project saved without results using the inputs at the start of the save. Later input changes are not included; save again to include them.'
+        : app.result
         ? 'Project saved without results: the inputs changed after the last run, so only the current model and settings were saved.'
         : 'Project saved without results: the model and all settings. Import project opens it ready to run.';
     } catch (e) {
       app.notice('Save failed: ' + e.message, true);
     } finally {
-      app.exporting = false;
-      app.$('save').disabled = Boolean(app.worker) || wasSaveDisabled;
+      app.setProjectExporting(false);
     }
   };
   app.exportPdf = () => {
@@ -129,6 +143,7 @@
       reportWindow.document.open();
       reportWindow.document.write(report.html);
       reportWindow.document.close();
+      app.clearNoticeError();
       app.$('exportStatus').textContent = 'Full report opened. Click Save as PDF / Print and select Save as PDF.';
       app.log?.('ok', 'project', 'Full PDF report opened.');
     } catch (e) {
@@ -138,19 +153,19 @@
     }
   };
   app.exportZip = async () => {
-    if (!app.result || app.exporting || app.importingProject) return;
-    app.exporting = true;
-    const saved = app.result,
-      savedProbe = app.probe,
-      savedSweep = app.sweepResult?.results.includes(app.result) ? {
-        ...app.sweepResult,
-        results: [...app.sweepResult.results]
-      } : null,
-      savedOptions = savedSweep ? app.bodeOptions() : null,
-      savedView = app.captureResultView();
-    app.$('exportZip').disabled = true;
-    app.$('exportStatus').textContent = 'Preparing complete results archive…';
+    if (!app.result || app.exporting || app.importingProject || app.worker) return;
+    app.setProjectExporting(true);
+    const savedRevision = app.editRevision;
+    app.$('exportStatus').textContent = app.$('status').textContent = 'Preparing complete results archive…';
     try {
+      const saved = app.result,
+        savedProbe = app.probe,
+        savedSweep = app.sweepResult?.results.includes(app.result) ? {
+          ...app.sweepResult,
+          results: [...app.sweepResult.results]
+        } : null,
+        savedOptions = savedSweep ? app.bodeOptions() : null,
+        savedView = app.captureResultView();
       await new Promise(resolve => setTimeout(resolve, 0));
       if (savedOptions) TE.validateProjectBode(savedOptions);
       const files = savedSweep ? await app.sweepFiles(savedSweep, savedOptions, saved, savedProbe) : await TE.completeResultsFiles(saved, {
@@ -172,14 +187,16 @@
       TE.assert(zip.size <= TE.projectLimits.archiveBytes, 'Project ZIP exceeds the 2 GiB import limit. Reduce retained sweep points or time steps.');
       app.download(app.projectFileName(), zip, 'application/zip');
       app.history?.('Save', savedSweep ? 'Project saved (sweep + results)' : 'Project saved (model + results)');
+      app.clearNoticeError();
       app.$('exportStatus').textContent = 'Project ZIP downloaded. Use Import project to reopen the model, saved results and view. Reports, SVG figures and CSV data are also included.';
-      app.$('status').textContent = 'Project saved with its results. Import project reopens it without recalculation.';
+      app.$('status').textContent = app.inputsChanged || app.editRevision !== savedRevision
+        ? 'Project saved with its results using the model and view at the start of the save. Current input changes are not included; save again to include them.'
+        : 'Project saved with its results. Import project reopens it without recalculation.';
     } catch (e) {
       app.$('exportStatus').textContent = 'ZIP export failed: ' + e.message;
-      app.$('status').textContent = 'Project save failed: ' + e.message;
+      app.notice('Project save failed: ' + e.message, true);
     } finally {
-      app.exporting = false;
-      app.$('exportZip').disabled = app.$('exportMenuButton').disabled;
+      app.setProjectExporting(false);
     }
   };
   app.exportResults = () => {

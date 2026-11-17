@@ -3,11 +3,27 @@
   // One switch for every result export. Bode CSV is re-enabled only by drawBode, which also checks
   // that the current Bode selection is valid.
   app.setExports = function setExports(enabled) {
-    for (const id of ['exportMenuButton', 'exportPdf', 'exportZip', 'exportResults', 'exportCsv']) app.$(id).disabled = !enabled;
+    for (const id of ['exportMenuButton', 'exportPdf', 'exportZip', 'exportResults', 'exportCsv']) app.$(id).disabled = !enabled || id === 'exportZip' && app.exporting;
     if (enabled) return;
     app.$('bodeCsv').disabled = true;
     app.$('exportMenu').hidden = true;
     app.$('exportMenuButton').setAttribute('aria-expanded', 'false');
+  };
+  // Recover the displayed result state after a non-destructive UI error. The error remains in the log.
+  app.clearNoticeError = function clearNoticeError() {
+    const badge = app.$('badge');
+    if (!badge.classList.contains('error')) return;
+    let text = 'READY', warning = false;
+    if (app.result && app.inputsChanged) text = 'INPUTS CHANGED';
+    else if (app.sweepResult?.results.includes(app.result)) {
+      text = app.sweepResult.status === 'complete' ? 'SWEEP COMPLETE' : 'SWEEP STOPPED';
+      warning = app.sweepResult.status !== 'complete' || app.sweepResult.results.some(r => !r.converged);
+    } else if (app.result) {
+      text = app.result.converged ? 'CONVERGED' : 'UNCONVERGED';
+      warning = !app.result.converged;
+    }
+    badge.className = warning ? 'warning' : '';
+    badge.textContent = text;
   };
   app.accept = function accept(r, {preserveView = false} = {}) {
     const previous = preserveView ? app.captureResultView() : null;
@@ -102,7 +118,7 @@
     app.$('profileCard').hidden = !visible;
   };
   // A displayed result must always belong to the current model. Anything else is cleared.
-  app.sameModel = r => Boolean(r?.config) && JSON.stringify(r.config) === JSON.stringify(app.config);
+  app.sameModel = r => Boolean(r?.config) && TE.sameValue(r.config, app.config);
   app.clearResults = function clearResults(message = 'Your response will appear here.') {
     app.result = null;
     app.sweepResult = null;

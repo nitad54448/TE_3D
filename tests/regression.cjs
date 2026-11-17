@@ -17,7 +17,7 @@ function model(periodic = false) {
 const elements = new Map();
 function el(id) {
   if (!elements.has(id)) elements.set(id, {value: '', textContent: '', innerHTML: '', hidden: false, disabled: false, checked: false,
-    max: 0, dataset: {}, style: {}, options: [], selectedOptions: [{text: 'Temperature'}], classList: {toggle(){}, remove(){}, add(){}},
+    max: 0, dataset: {}, style: {}, options: [], selectedOptions: [{text: 'Temperature'}], classList: {toggle(){}, remove(){}, add(){}, contains(c){return (elements.get(id).className || '').split(/\s+/).includes(c);}},
     setAttribute(){}, removeAttribute(){}, setCustomValidity(){}, addEventListener(){}});
   return elements.get(id);
 }
@@ -183,6 +183,41 @@ async function check(label, fn) {
     TE.graphSolve = () => { throw new Error('CG failed: matrix not positive definite.'); };
     try { assert.throws(() => solver.electric(T, solver.properties(T).p, 0), /^Error: Electrical solve failed .*Move the electrode onto a conductor/); }
     finally { TE.graphSolve = graphSolve; }
+  });
+  await check('Insulator gaps reject unresolved current and open-circuit voltage, including magnetic solves', async () => {
+    const c = await app.moduleConfig();
+    for (let j = 25; j < 28; j++) c.materialMap[j * c.nx + 12] = 4; // one-cell-wide cut through the entire top strap
+    c.thermal.bottom.value.bias = 350; c.thermal.top = {kind: 'temperature', value: 300, h: 0};
+    assert(TE.validate2DConfig(c).some(i => i.path === 'electrical' && /no conducting path/.test(i.message)));
+    c.electrical.kind = 'open_circuit';
+    assert.equal(TE.validate2DConfig(c).length, 0, 'Open-circuit models can still be edited and saved');
+    for (const magneticField of [0, 1]) {
+      c.magneticField = magneticField;
+      const solver = TE.from2DConfig(c), T = solver.initial();
+      assert.throws(() => solver.electric(T, solver.properties(T).p, 0), /terminal voltage cannot be resolved/);
+      assert.throws(() => TE.run2D(c), /terminal voltage cannot be resolved/);
+    }
+    c.magneticField = 0; c.electrical.kind = 'voltage'; c.electrical.value = 0;
+    assert.equal(TE.validate2DConfig(c).length, 0, 'Voltage control does not infer a voltage from leakage');
+    const voltageSolver = TE.from2DConfig(c), T = voltageSolver.initial();
+    assert.equal(voltageSolver.electric(T, voltageSolver.properties(T).p, 0).terminalVoltage, 0);
+    c.electrical.kind = 'open_circuit'; c.materials[4].sigma = 1e-3;
+    const resolved = TE.run2D(c);
+    assert(resolved.converged && Number.isFinite(resolved.terminalVoltage) && Math.abs(resolved.terminalVoltage) < .1);
+    assert.notEqual(resolved.terminalVoltage, 0, 'A finite resistive path must not force open-circuit voltage to zero');
+  });
+  await check('Electrical connectivity follows shared corner nodes, equipotential contacts and uniform resistors', () => {
+    const c = {...model(), nx: 2, ny: 2, materialMap: [0, 1, 1, 0]};
+    c.materials.push({...c.materials[0], name: 'Insulator', sigma: 1e-14});
+    assert.equal(TE.validate2DConfig(c).length, 0, 'Diagonal cells share a conducting node in the solver');
+    const s = TE.from2DConfig(c), T = s.initial();
+    assert.doesNotThrow(() => s.checkElectricalConnection(s.properties(T).p));
+    assert(TE.hasResolvedElectricalPath(6, [0, 2], [3], visit => {
+      for (const [a, b, sigma] of [[0, 1, 1], [1, 2, 1e-20], [2, 3, 1], [3, 4, 1e-20], [4, 5, 1]]) visit(a, b, sigma);
+    }), 'An equipotential electrode bridges its own nodes');
+    const low = model(); low.materials[0].sigma = 1e-14; low.electrical.kind = 'open_circuit';
+    low.materials[0].alpha = 2e-4; low.thermal.right.value = 350;
+    assert(Math.abs(TE.run2D(low).terminalVoltage - .01) < 1e-10, 'Uniform low conductivity does not erase Seebeck voltage');
   });
   await check('Generated worker executes and decodes', () => {
     let message; const context = {self: {postMessage: m => {if (m.type === 'result' || m.type === 'error') message = structuredClone(m);}}};
@@ -367,6 +402,51 @@ async function check(label, fn) {
     app.applyGeometry = applyGeometry; app.fill = fill; app.inputsChanged = false;
   });
   const minimal = r => [metadataFile(), {name: 'model.json', data: JSON.stringify(r.config)}, {name: 'results.json', data: JSON.stringify(r)}];
+  await check('Project saves keep controls locked, preserve their snapshots and report later edits accurately', async () => {
+    for (const withResults of [false, true]) for (const fail of [false, true]) {
+      const {app: a, context, el: e} = appContext({preset: 'layers', field: 'temperature', harmonic: '0', representation: 'amplitude',
+        profileField: 'temperature', profileTime: '0', terminalTrace: 'voltage'});
+      a.config = structuredClone(dc.config); a.result = withResults ? structuredClone(dc) : null;
+      a.read = () => structuredClone(a.config);
+      a.geometryInput = () => Object.fromEntries(['nx', 'ny', 'lx', 'ly', 'depth'].map(k => [k, a.config[k]]));
+      let release, reject, files, zip, calls = 0;
+      const zipFiles = context.TE.zipFiles;
+      context.TE.zipFiles = entries => { files = entries; calls++; return new Promise((ok, bad) => {release = ok; reject = bad;}); };
+      a.download = (name, blob) => {zip = blob;};
+      a.notice('Project import failed: bad ZIP', true); await new Promise(resolve => queueMicrotask(resolve));
+      const warnings = Number(e('logCount').textContent);
+      const saving = a.saveProject();
+      for (let i = 0; i < 10 && !release; i++) await new Promise(resolve => setTimeout(resolve, 0));
+      assert(release, e('status').textContent);
+      assert(a.exporting && e('save').disabled && e('preset').disabled && e('exportZip').disabled && e('run').disabled);
+      assert(e('status').textContent.startsWith('Preparing '));
+      a.validateUI(); assert(e('save').disabled, 'Validation must not unlock a pending save');
+      a.setExports(true); assert(e('exportZip').disabled, 'Browsing a result must not unlock ZIP export');
+      await a.saveProject(); assert.equal(calls, 1, 'A second click cannot start another save');
+      const preset = a.presetShown; e('preset').value = 'joule'; await a.loadPreset(); assert.equal(e('preset').value, preset);
+      const sigma = a.config.materials[0].sigma;
+      a.config.materials[0].sigma *= 2; a.dirty(); a.validateUI();
+      if (fail) reject(new Error('Test ZIP failure'));
+      else release(await zipFiles(files));
+      await saving; await new Promise(resolve => queueMicrotask(resolve));
+      assert(!a.exporting && !e('save').disabled && !e('preset').disabled && !e('run').disabled);
+      if (fail) {
+        assert.equal(zip, undefined); assert(e('status').textContent.includes('failed: Test ZIP failure'));
+        assert.equal(e('badge').className, 'error');
+      } else {
+        const saved = await context.TE.readProjectZip(zip);
+        assert.equal(saved.config.materials[0].sigma, sigma);
+        assert.equal(Boolean(saved.result), withResults);
+        assert(e('status').textContent.includes('not included'), e('status').textContent);
+        assert(!e('badge').classList.contains('error'));
+        assert.equal(e('badge').textContent, withResults ? 'INPUTS CHANGED' : 'READY');
+        assert.equal(Number(e('logCount').textContent), warnings, 'Preparation and a successful save must not add errors');
+      }
+    }
+    const {app: a, context} = appContext(); a.result = dc; a.worker = {};
+    context.TE.completeResultsFiles = () => {throw new Error('Must not export during a run');};
+    await a.exportZip(); assert(!a.exporting);
+  });
   await check('Only the current model and project versions are accepted', async () => {
     assert.equal(TE.default2D().version, TE.modelVersion);
     for (const bad of [{...model(), version: 1}, (({version, ...rest}) => rest)(model())]) assert.throws(() => TE.checkEditorModel(bad), /Unsupported model version/);
@@ -822,6 +902,34 @@ async function check(label, fn) {
     const [head, row] = TE.bodeCsv(TE.bodeRows(results, {quantity: 'impedance'})).split('\n'), cells = row.split(',').map(v => Number(v.replace(/"/g, '')));
     assert(head.endsWith(',status,real_part,imag_part') && Math.abs(cells.at(-2) - .01) < 1e-12 && Math.abs(cells.at(-1)) < 1e-12);
   });
+  await check('Bode Cartesian plots and CSV retain tiny/zero outputs, but exclude invalid references', () => {
+    const r = structuredClone(ac); r.harmonics.terminalVoltage[1] = {re: 3e-14, im: -4e-14};
+    const options = {reference: 'time', phaseFloor: 1e-12};
+    const row = TE.bodeRows([r], options)[0];
+    assert.equal(row.phase, null); assert.equal(row.real, 3e-14); assert.equal(row.imag, -4e-14);
+    const cells = TE.bodeCsv([row]).split('\n')[1].split(',').map(v => v.replace(/"/g, ''));
+    assert.equal(cells[4], ''); assert.equal(Number(cells.at(-2)), 3e-14); assert.equal(Number(cells.at(-1)), -4e-14);
+    assert(app.bodeCharts([row], {representation: 'complex'}).every(svg => svg.includes('data-bode-point="0"')));
+    r.harmonics.terminalVoltage[1] = {re: 0, im: 0};
+    const zero = TE.bodeRows([r], options)[0]; assert.equal(zero.real, 0); assert.equal(zero.imag, 0); assert.equal(zero.phase, null);
+    r.harmonics.terminalVoltage[2] = {re: 3, im: 4}; r.config.electrical.value = {bias: 0, amplitude: 2, phase: 90};
+    for (const unwrap of [false, true]) {
+      const rotated = TE.bodeRows([r], {harmonic: 2, reference: 'drive', normalization: 'power', phaseFloor: 10, unwrap})[0];
+      assert.equal(rotated.phase, null); assert(Math.abs(rotated.real + .75) < 1e-15 && Math.abs(rotated.imag + 1) < 1e-15);
+    }
+    r.config.electrical.value.amplitude = 0;
+    const noRef = TE.bodeRows([r], {harmonic: 2, reference: 'drive'})[0];
+    assert.equal(noRef.magnitude, 5); assert.equal(noRef.real, null); assert.equal(noRef.imag, null);
+    r.converged = false;
+    assert.equal(TE.bodeRows([r], {reference: 'time'})[0].real, null);
+    const {app: a, el: e} = appContext({bodeQuantity: 'terminalVoltage', bodeHarmonic: '1', bodeRepresentation: 'complex',
+      bodeReference: 'time', bodeNormalization: 'raw', bodeScale: 'physical', bodeFloor: '', bodeUnwrap: 'unwrapped'});
+    a.sweepResult = structuredClone(sweep); e('bodeQuantity').querySelector = () => ({}); a.drawBode();
+    assert(e('bodeFloor').disabled && e('bodeUnwrap').disabled && !e('bodeCsv').disabled);
+    assert(e('bodeMagnitude').innerHTML.includes('<svg'), e('bodeNote').textContent);
+    e('bodeRepresentation').value = 'polar'; a.drawBode();
+    assert(!e('bodeFloor').disabled && !e('bodeUnwrap').disabled && e('bodeCsv').disabled);
+  });
   await check('Current arrows follow the phase of the terminal current', () => {
     const c = model(true); c.electrical.value.phase = 90; const r = TE.run2D(c), {theta, basis} = TE.arrowPhase(r, 1);
     assert(basis === 'terminal' && Math.abs(theta + Math.PI / 2) < 1e-9);
@@ -1243,6 +1351,28 @@ async function check(label, fn) {
     const ambient = model(); ambient.thermal.left = {kind: 'convection', h: 1, value: 2500};
     assert.equal(TE.validate2DConfig(ambient).length, 0);
   });
+  await check('Convection ambient outside the solid envelope does not invalidate admissible material laws', () => {
+    const c = model(); c.materials[0].beta = -.0005; c.thermal.left = {kind: 'convection', h: 1, value: 2500};
+    assert.equal(TE.validate2DConfig(c).length, 0);
+    const r = TE.run2D(c); assert(r.converged && Math.min(...r.temperature) >= 300 && Math.max(...r.temperature) < 302);
+    c.thermal.left.value = .5; assert.equal(TE.validate2DConfig(c).length, 0);
+    c.materials[0].beta = .01;
+    assert(TE.validate2DConfig(c).some(i => i.path === 'materials.0.sigma'), 'Material checks remain active at clamped temperatures');
+    const runtime = model(); runtime.materials[0].beta = -.0005;
+    const s = TE.from2DConfig(runtime);
+    assert.throws(() => s.properties(Array(s.mesh.n).fill(2500)), /operating range|temperature/i);
+  });
+  await check('Model equality ignores key order while retaining old results only for identical inputs', () => {
+    const {app: a, el: e} = appContext(); a.config = structuredClone(dc.config);
+    a.config.materials[0] = Object.fromEntries(Object.entries(a.config.materials[0]).reverse());
+    assert(a.sameModel(dc)); a.result = dc; a.retainResults('Stopped before the first checkpoint.');
+    assert.equal(a.result, dc); assert.equal(e('badge').textContent, 'PREVIOUS RESULT');
+    a.config = structuredClone(a.config); a.config.materials[0].sigma *= 2;
+    assert(!a.sameModel(dc)); a.retainResults('Stopped before the first checkpoint.');
+    assert.equal(a.result, null); assert(e('status').textContent.includes('different model'));
+    assert(TE.sameValue({b: [1, 2], a: {z: 3}}, {a: {z: 3}, b: [1, 2]}));
+    assert(!TE.sameValue([1, 2], [2, 1]));
+  });
   await check('Busy UI and worker cleanup cover success, Stop, errors, exhausted cycles, sweeps and page exit', () => {
     for (const exit of ['result', 'stop', 'error', 'workerError', 'messageError', 'badResult', 'startError', 'unconverged', 'sweepDone', 'sweepError', 'pagehide']) {
       const {app: a, context, el: e} = appContext();
@@ -1404,6 +1534,40 @@ async function check(label, fn) {
     e('excitationMode').value = 'steady'; a.config.mode = 'periodic'; e('frequency').value = '5'; e('samples').value = '64';
     e('status').textContent = 'Solving coupled 2D transport…'; await flush();
     assert(logItems().some(x => x.msg.includes('Run started: AC single frequency 5 Hz, 64 steps/period')));
+  });
+  await check('Recoverable errors do not taint later sweep selection or successful save messages', async () => {
+    const {app: a, el: e} = appContext(), flush = () => new Promise(resolve => queueMicrotask(resolve));
+    a.result = structuredClone(ac); a.config = a.result.config;
+    a.sweepResult = {config: a.config, results: [a.result], frequencies: [ac.frequency], status: 'complete'};
+    a.notice('Project import failed: test', true); await flush();
+    const count = Number(e('logCount').textContent);
+    a.selectSweepPoint(0); await flush();
+    assert.equal(e('badge').textContent, 'SWEEP COMPLETE'); assert.equal(e('badge').className, '');
+    assert.equal(Number(e('logCount').textContent), count);
+    assert.equal(e('logList').children.at(-1).className, 'lv-info');
+    a.sweepResult.status = 'stopped'; a.notice('Bad material JSON', true); a.selectSweepPoint(0); await flush();
+    assert.equal(e('badge').textContent, 'SWEEP STOPPED'); assert.equal(e('badge').className, 'warning');
+    a.inputsChanged = true; a.notice('Bad material JSON again', true); a.selectSweepPoint(0);
+    assert.equal(e('badge').textContent, 'INPUTS CHANGED'); assert.equal(e('badge').className, '');
+    a.sweepResult = null; a.inputsChanged = false; a.result.converged = false;
+    a.notice('Bad project ZIP', true); a.clearNoticeError();
+    assert.equal(e('badge').textContent, 'UNCONVERGED'); assert.equal(e('badge').className, 'warning');
+    a.notice('Bad project ZIP again', true); await flush();
+    e('status').textContent = 'Project saved with its results.'; await flush();
+    assert.equal(e('logList').children.at(-1).className, 'lv-ok', 'Success classification is independent of a stale badge');
+  });
+  await check('Thin-strip Hall probe labels remain separate in canvas and exported SVG', () => {
+    const c = app.jouleContactsConfig();
+    const labels = [], recorder = {save: noop, restore: noop, fillRect: noop, strokeRect: noop, strokeText: noop,
+      fillText(...args) { labels.push({args, align: this.textAlign}); }};
+    app.hallMarkers({ctx: recorder, left: 50, top: 20, w: 400, h: 20}, c);
+    assert.deepEqual(labels.map(x => x.align), ['right', 'left']);
+    assert(labels[0].args[1] < labels[1].args[1]);
+    const html = TE.resultReport(TE.run2D(c)).html;
+    const plus = html.match(/<text x="([^"]+)" y="([^"]+)"[^>]*text-anchor="([^"]+)"[^>]*>P\+<\/text>/),
+      minus = html.match(/<text x="([^"]+)" y="([^"]+)"[^>]*text-anchor="([^"]+)"[^>]*>P−<\/text>/);
+    assert(plus && minus); assert.equal(plus[3], 'end'); assert.equal(minus[3], 'start');
+    assert(Number(plus[1]) < Number(minus[1]), 'Exported labels extend away from each other even at the same height');
   });
   await check('Canvas clearing resets sub-1 DPR transforms; Hall markers use contrast halos; extreme aspect ratios clamp cleanly', () => {
     const {context, app: a, el: e} = appContext({preset: 'layers'});

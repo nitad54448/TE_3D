@@ -57,6 +57,9 @@
   const levelNow = text => {
     if (/failed:/i.test(text)) return 'error';
     if (/did not converge|Sweep completed with \d+ unconverged/i.test(text)) return 'warn';
+    // A retained result's warning/error badge does not describe a later successful UI action.
+    if (/^(Project saved|Mesh applied)/.test(text)) return 'ok';
+    if (/^(Preparing |Sweep map \/ report:)/.test(text)) return 'info';
     const b = badge();
     if (!b) return 'info';
     if (b.classList.contains('error')) return 'error';

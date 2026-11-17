@@ -340,7 +340,7 @@
     };
     show('validationSummary', issues.length ? '<strong>Correct these inputs before applying, exporting or running:</strong><ul>' + issues.slice(0, 10).map(e => `<li><b>${app.esc(e.path)}</b> — ${app.esc(e.message)}</li>`).join('') + '</ul>' + (issues.length > 10 ? `<small>${issues.length - 10} more issue(s) are highlighted in the form.</small>` : '') : '');
     show('validationWarnings', warnings.length ? '<strong>Check before running (the model still runs):</strong><ul>' + warnings.map(w => `<li>${app.esc(w.message)}</li>`).join('') + '</ul>' : '');
-    for (const id of ['run', 'save']) app.$(id).disabled = Boolean(app.busy || app.worker) || issues.length > 0;
+    for (const id of ['run', 'save']) app.$(id).disabled = Boolean(app.busy || app.worker || app.exporting) || issues.length > 0;
     let pending = false,
       signature = null;
     try {
@@ -758,6 +758,7 @@
     app.$('preset').value = value;
   };
   app.loadPreset = async () => {
+    if (app.exporting) { app.$('preset').value = app.presetShown; return; }
     if (app.busy || app.worker || app.importingProject) return;
     const token = ++app.presetToken,
       p = app.$('preset').value,
@@ -772,7 +773,7 @@
         const config = await build();
         // Ignore a slow library load if another preset, a run or an import started meanwhile.
         if (token !== app.presetToken) return;
-        if (app.worker || app.importingProject) {
+        if (app.worker || app.importingProject || app.exporting) {
           app.$('preset').value = app.presetShown;
           return;
         }

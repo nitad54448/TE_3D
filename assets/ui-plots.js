@@ -146,27 +146,22 @@
     app.hallMarkers(f, c);
     app.$('gridInfo').textContent = `${c.nx} × ${c.ny} = ${c.nx * c.ny} elements · ${(c.nx + 1) * (c.ny + 1)} nodes`;
   };
-  // Hall voltage probes P+ and P− (small squares), labelled on the side facing the domain interior.
+  // Hall voltage probes P+ and P− (small squares), with collision-aware labels shared with SVG exports.
   app.hallMarkers = function hallMarkers({ctx, left, top, w, h}, c) {
-    const {plus, minus} = TE.hallProbeNodes(c);
     ctx.save();
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'center';
     ctx.lineJoin = 'round';
-    for (const [node, label] of [[plus, 'P+'], [minus, 'P−']]) {
-      const i = node % (c.nx + 1),
-        j = Math.floor(node / (c.nx + 1)),
-        x = left + i / c.nx * w,
-        y = top + h - j / c.ny * h,
-        ty = j < c.ny / 2 ? y - 8 : y + 16;
+    for (const {label, x, y, tx, ty, anchor} of TE.hallProbeLayout(c, {left, top, w, h})) {
+      ctx.textAlign = {middle: 'center', start: 'left', end: 'right'}[anchor];
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#142f43';
       ctx.fillStyle = '#ffd166';
       ctx.fillRect(x - 4, y - 4, 8, 8);
       ctx.strokeRect(x - 4, y - 4, 8, 8);
       ctx.lineWidth = 3;
-      ctx.strokeText?.(label, x, ty);
-      ctx.fillText(label, x, ty);
+      ctx.strokeText?.(label, tx, ty);
+      ctx.fillText(label, tx, ty);
     }
     ctx.restore();
   };

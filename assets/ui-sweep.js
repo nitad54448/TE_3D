@@ -22,7 +22,7 @@
       harmonic: Number(app.$('bodeHarmonic').value),
       reference: app.$('bodeReference').value,
       normalization: app.$('bodeNormalization').value,
-      phaseFloor: readBodeNumber('bodeFloor', true, v => v >= 0, 1e-12),
+      phaseFloor: readBodeNumber('bodeFloor', representation !== 'complex', v => Number.isFinite(v) && v >= 0, 1e-12),
       unwrap: app.$('bodeUnwrap').value === 'unwrapped',
       x: readBodeNumber('bodeX', spatial, v => Number.isFinite(v) && v >= 0 && v <= 1, .5, 2),
       y: readBodeNumber('bodeY', spatial, v => Number.isFinite(v) && v >= 0 && v <= 1, .5, 2),
@@ -66,6 +66,7 @@
     if (app.worker || !app.sweepResult?.results[i]) return;
     app.$('sweepPoint').value = String(i);
     app.accept(app.sweepResult.results[i], {preserveView: true});
+    app.clearNoticeError();
     app.$('status').textContent = `Sweep map / report: ${app.fmt(app.result.frequency)} Hz · ${app.result.converged ? 'converged' : 'unconverged, excluded from Bode'}${app.inputsChanged ? ' · inputs changed since this sweep; run again to export.' : ''}`;
   };
   // Fixed paper palette for printed and archived reports, independent of the interface theme.
@@ -77,11 +78,7 @@
     background: '#ffffff'
   });
   // Real/imaginary parts of the (normalized, referenced) phasor shown in the Bode rows.
-  app.complexBodeRows = rows => rows.map(r => {
-    if (r.magnitude === null || r.phase === null) return {...r, real: null, imag: null};
-    const rad = r.phase * Math.PI / 180;
-    return {...r, real: r.magnitude * Math.cos(rad), imag: r.magnitude * Math.sin(rad)};
-  });
+  app.complexBodeRows = rows => rows; // components are computed once, from the original phasors, by TE.bodeRows
   // Both Bode charts for the chosen representation. dB applies only to the magnitude chart.
   app.bodeCharts = function bodeCharts(rows, {representation = 'polar', ...opts} = {}) {
     if (representation === 'complex') {
@@ -179,6 +176,8 @@
     // Real/imaginary parts are signed, so the dB scale does not apply to them.
     app.$('bodeScale').disabled = complex;
     app.$('bodeDb').disabled = complex || app.$('bodeScale').value !== 'db';
+    app.$('bodeFloor').disabled = complex;
+    app.$('bodeUnwrap').disabled = complex;
     // Imposed inactive references are unavailable; measured zeros can vary with frequency. Only converged
     // points decide: an unconverged point reports its own reason, which would otherwise keep any reference on.
     for (const option of app.$('bodeReference').options) {
@@ -197,7 +196,7 @@
     if (app.$('bodeReference').value === 'time') app.$('bodeNormalization').value = 'raw';
     app.$('sweepStatus').textContent = `${rs.filter(r => r.converged).length}/${app.sweepResult.frequencies.length} converged · ${app.sweepResult.status}${app.worker ? ' · computation continues' : ''}.`;
     try {
-      for (const id of ['bodeFloor', ...(spatial ? ['bodeX', 'bodeY'] : [])]) TE.assert(app.$(id).value.trim() !== '', 'Complete Bode numerical inputs.');
+      for (const id of [...(complex ? [] : ['bodeFloor']), ...(spatial ? ['bodeX', 'bodeY'] : [])]) TE.assert(app.$(id).value.trim() !== '', 'Complete Bode numerical inputs.');
       const options = app.bodeOptions(),
         rows = TE.bodeRows(rs, options),
         db = !complex && options.scale === 'db',
