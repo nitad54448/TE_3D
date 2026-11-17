@@ -375,6 +375,7 @@ label:has(> input:disabled), label:has(> select:disabled) { color: var(--disable
 .card > .sub { margin: -6px 0 10px; }
 .toolbar-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .two-col { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(340px, 1fr); gap: 28px; align-items: start; }
+.two-col.even { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .card { min-width: 0; margin: 0 0 24px; padding: 0; background: none; border: 0; }
 .card:last-child { margin-bottom: 0; }
 .tag { padding: 1px 8px; border: 1px solid var(--line-strong); color: var(--text-2); font: 12px var(--font-mono); }
@@ -483,7 +484,7 @@ tbody tr:hover { background: var(--inset-bg); }
 @media (max-width: 1180px) {
   .metrics { grid-template-columns: repeat(3, 1fr); }
   .metrics article { border-top: 1px solid var(--line); }
-  .two-col { grid-template-columns: 1fr; }
+  .two-col, .two-col.even { grid-template-columns: 1fr; }
   #results { grid-template-columns: 1fr; }
 }
 @media (max-width: 860px) {
