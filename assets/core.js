@@ -20,8 +20,10 @@
         TE.assert(Number.isFinite(degrees), 'Phase must be finite.');
         return degrees % 360 * Math.PI / 180;
       };
+      // Hot-path checks (finite, evaluate, checkRange) build their message only when they fail: they run for
+      // every node and link of every iteration, and an eager template string would be built millions of times.
       TE.finite = (x, name) => {
-        TE.assert(Number.isFinite(x), `${name} must be finite.`);
+        if (!Number.isFinite(x)) throw new Error(`${name} must be finite.`);
         return x;
       };
       TE.law = (p, T) => {
@@ -63,8 +65,9 @@
         }
         evaluate(key, T) {
           TE.assert(Number.isFinite(T) && T > 0, 'Temperature must be finite and > 0 K.');
-          const v = TE.finite(TE.law(this[key], T), `${this.name}: ${key}`);
-          TE.assert(key === 'alpha' || v > 0, `${this.name}: ${key} must be positive.`);
+          const v = TE.law(this[key], T);
+          if (!Number.isFinite(v)) throw new Error(`${this.name}: ${key} must be finite.`);
+          if (key !== 'alpha' && !(v > 0)) throw new Error(`${this.name}: ${key} must be positive.`);
           return v;
         }
         density(T) {
@@ -115,7 +118,7 @@
       });
       TE.checkRange = (value, key) => {
         const limit = TE.resultLimits[key];
-        TE.assert(Number.isFinite(value) && Math.abs(value) <= limit && (key !== 'temperature' || value >= 1), `Result rejected: ${key} is outside the application operating range (${key === 'temperature' ? '1–2000 K' : 'absolute limit ' + limit + ' SI units'}). Check units, dimensions, excitation and material properties. No clipped result is used.`);
+        if (!(Number.isFinite(value) && Math.abs(value) <= limit && (key !== 'temperature' || value >= 1))) throw new Error(`Result rejected: ${key} is outside the application operating range (${key === 'temperature' ? '1–2000 K' : 'absolute limit ' + limit + ' SI units'}). Check units, dimensions, excitation and material properties. No clipped result is used.`);
         return value;
       };
       TE.checkResult = r => {
@@ -1199,7 +1202,9 @@
                 relaxation: 1,
                 abortOnStall: true
               });
-            } catch {
+            } catch (error) {
+              // A converged state beyond the second-law limit is rejected at once: damping converges to it again.
+              if (error?.final) throw error;
               this.undampedFailures++;
             }
           }
@@ -1265,16 +1270,17 @@
                 // Converged, but a state past the second-law limit is not physical: reject it like any
                 // result outside the operating range.
                 const merit = this.nernstActive ? this.maxEttingshausenMerit(candidate) : null;
-                if (merit && merit.value >= 1) throw new Error(TE.ettingshausenMessage(merit));
+                if (merit && merit.value >= 1) throw Object.assign(new Error(TE.ettingshausenMessage(merit)), {final: true});
                 return candidate;
               }
               // The update has converged but the heat balance has not. With small time steps the CG
               // tolerance, relative to capacity × absolute temperature, is looser than the balance
-              // test, and the warm-started solve would return the same state. Tighten it. The banded LU
+              // test, and the warm-started solve would return the same state. Tighten it, down to 2E-14: closer
+              // to rounding, conjugate gradients would stall and fail with an unrelated message. The banded LU
               // of the magnetic model is exact to rounding and has no tolerance: there the next
               // iteration only relinearizes.
               lastResidual = residual.normalized;
-              if (!this.righiLeducActive && !b.ettingshausen) linearRtol = Math.max(linearRtol / 100, 1e-16);
+              if (!this.righiLeducActive && !b.ettingshausen) linearRtol = Math.max(linearRtol / 100, 2e-14);
             }
             const step = candidate.map((v, i) => bc.fixed.has(i) ? v : T[i] + relaxation * (v - T[i]));
             T = history ? this.anderson(history, T, candidate, step, relaxation, bc.fixed) : step;
@@ -1991,6 +1997,24 @@
     (function (TE) {
       // Model file format version, checked when models and projects are imported (3D format).
       TE.modelVersion = 3;
+      // The copper of lib/Copper.json, the one copper of every example: the startup leg and the Joule example use
+      // it directly, and the module and RC examples fall back to it when the file cannot be read (app.libraryCopies).
+      // The regression suite checks that it equals the file.
+      TE.libraryCopper = Object.freeze({
+        name: 'Copper',
+        rho: 8960,
+        Cp: 385,
+        k: 401,
+        sigma: 57478566.4581124,
+        beta: 0.004176967424511028,
+        alpha: 1.83e-6,
+        alphaSlope: 0,
+        hall: -5.17e-11,
+        nernst: 0,
+        righiLeduc: -0.002972,
+        magnetoresistance: 8.83e-6,
+        color: '#edaf6e'
+      });
       // Startup example ("Cu / BiTe / Cu · thermoelectric leg"): a p-type BiTe leg between two copper
       // contacts, run as a Peltier cooler. The other examples derived from it set what they change.
       TE.default2D = () => ({
@@ -2016,17 +2040,7 @@
           plus: {x: .5, y: 0},
           minus: {x: .5, y: 1}
         },
-        materials: [{
-          name: 'Copper',
-          rho: 8960,
-          Cp: 385,
-          k: 400,
-          sigma: 5.8e7,
-          beta: .0039,
-          alpha: 1.5e-6,
-          alphaSlope: 0,
-          color: '#edaf6e'
-        }, {
+        materials: [{...TE.libraryCopper}, {
           name: 'BiTe',
           rho: 7700,
           Cp: 150,
@@ -2465,11 +2479,20 @@
         TE.assert(TE.inferSimulationMode(c) === 'periodic', 'A frequency sweep needs a nonzero active electrical or thermal AC excitation.');
         const bytes = TE.estimateRetainedBytes(c, frequencies.length);
         TE.assert(bytes <= TE.retainedMemoryLimit, 'Sweep retained data exceeds the 256 MiB estimate. Reduce frequency points, mesh size or time steps.');
-        for (const frequency of frequencies) TE.assertValid2DConfig({
+        // The model is validated once: in TE.validate2DConfig only the frequency check and the time step
+        // 1/(f·samples) depend on the frequency. Every frequency is positive (sweepFrequencies); the time
+        // step is checked per point below. A new frequency-dependent check must be repeated here as well.
+        TE.assertValid2DConfig({
           ...c,
           mode: 'periodic',
-          frequency
+          frequency: frequencies[0]
         });
+        for (const frequency of frequencies) {
+          const dt = 1 / (frequency * c.samples);
+          if (!(Number.isFinite(dt) && dt > 0)) throw Object.assign(new Error('frequency: The frequency and step count produce an unrepresentable time step.'), {
+            validationIssues: [{path: 'frequency', message: 'The frequency and step count produce an unrepresentable time step.'}]
+          });
+        }
         return frequencies;
       };
       TE.runSweep = (c, emit = () => {}) => {

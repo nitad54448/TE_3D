@@ -443,10 +443,13 @@
       }
       const removed = app.config.materials[index]?.name || `Material ${index + 1}`;
       app.config.materials.splice(index, 1);
+      let repainted = 0;
       for (let k = 0; k < app.config.materialMap.length; k++) {
         const m = app.config.materialMap[k];
-        if (m === index) app.config.materialMap[k] = 0;
-        else if (m > index) app.config.materialMap[k] = m - 1;
+        if (m === index) {
+          app.config.materialMap[k] = 0;
+          repainted++;
+        } else if (m > index) app.config.materialMap[k] = m - 1;
       }
       if (app.selected === index) app.selected = 0;
       else if (app.selected > index) app.selected--;
@@ -454,7 +457,11 @@
       app.drawGeometry();
       app.dirty();
       app.validateUI();
-      app.history?.('Edit', `Removed material ${removed}`);
+      // Cells painted with the removed material now use material 1: say so, since the geometry changed.
+      const replacement = app.config.materials[0]?.name || 'Material 1',
+        summary = `Removed material ${removed}` + (repainted ? `; ${repainted} cell${repainted === 1 ? '' : 's'} painted with it now use ${replacement}.` : '.');
+      app.$('status').textContent = summary + (repainted ? ' Inspect the material map on the Geometry tab.' : '');
+      app.history?.('Edit', summary);
     } catch (e) {
       app.notice(e.message, true);
     }
@@ -564,7 +571,7 @@
     'Ge_p_reference.json': [m => m.sigma > 0 && m.hall > 0, {name: 'Ge-p, reference', rho: 5323, Cp: 310, k: 58, sigma: 8340.3, alpha: .0003282, beta: .00271, alphaSlope: 4.21e-7, hall: 7.43e-6, nernst: 3.08e-6, righiLeduc: 4.73e-5, magnetoresistance: .00134, color: '#b07a96'}],
     'Bi2Te3.json': [m => m.alpha > 0, {name: 'Bi2Te3 (p-type)', rho: 7740, Cp: 154.4, k: 1.6, sigma: 1.1e5, beta: 0, alpha: 2e-4, alphaSlope: 0, hall: 3.121e-07, nernst: 1.59e-06, righiLeduc: 0.013, magnetoresistance: 0.000307, color: '#73d8d0'}],
     'Bi2Te3_n_type.json': [m => m.alpha < 0, {name: 'Bi2Te3 n-type', rho: 7740, Cp: 154.4, k: 1.6, sigma: 1.1e5, beta: 0, alpha: -2e-4, alphaSlope: 0, hall: -3.121e-07, nernst: 1.59e-06, righiLeduc: -0.013, magnetoresistance: 0.000307, color: '#ae92d9'}],
-    'Copper.json': [m => m.sigma > 1e6, {name: 'Copper', rho: 8960, Cp: 385, k: 401, sigma: 57478566.4581124, beta: 0.004176967424511028, alpha: 1.83e-6, alphaSlope: 0, hall: -5.17e-11, nernst: 0, righiLeduc: -0.002972, magnetoresistance: 8.83e-06, color: '#edaf6e'}],
+    'Copper.json': [m => m.sigma > 1e6, TE.libraryCopper], // shared with the startup and Joule examples
     'Alumina.json': [m => m.sigma < 1e-6, {name: 'Alumina (Al2O3)', rho: 3750, Cp: 750, k: 24, sigma: 1e-12, beta: 0, alpha: 0, alphaSlope: 0, hall: 0, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#d9d4c7'}],
     'Air.json': [m => m.sigma < 1e-6, {name: 'Air (1 atm, still)', rho: 1.1614, Cp: 1007, k: .0263, sigma: 1e-14, beta: 0, alpha: 0, alphaSlope: 0, hall: 0, nernst: 0, righiLeduc: 0, magnetoresistance: 0, color: '#46535f'}]
   };
@@ -812,8 +819,6 @@
         'No terminal current flows. The Seebeck coefficient is 200 µV/K, giving a source-minus-sink voltage of 10 mV for this 50 K temperature difference with ideal zero-Seebeck leads. ' +
         'Inspect the temperature and potential maps, then reverse the temperature difference to reverse the voltage.'
     }[p];
-    app.config = c;
-    app.selected = 0;
     if (p === 'spreading') {
       // Copper and BiTe halves on 12 × 8 cells; 0.1 A DC enters through the middle half of the left edge.
       Object.assign(c, {mode: 'steady', nx: 12, ny: 8, lx: .002, ly: .001, materialMap: Array.from({length: 96}, (_, i) => i % 12 < 6 ? 0 : 1)});
@@ -856,6 +861,16 @@
       c.thermal = {left: fixed(300), right: fixed(300), top: flux(), bottom: flux()};
       c.electrical = {kind: 'current', value: {bias: 1e-3, amplitude: 0, phase: 0}, sourceSide: 'left', sinkSide: 'right', sourceRange: [0, 1], sinkRange: [0, 1]};
     }
+    // Checked like the library-based examples above before it replaces the model.
+    try {
+      TE.assertValid2DConfig(c);
+    } catch (e) {
+      app.$('preset').value = app.presetShown;
+      app.notice('Could not load the example: ' + e.message, true);
+      return;
+    }
+    app.config = c;
+    app.selected = 0;
     app.fill();
     app.dirty();
     app.showPreset(p);

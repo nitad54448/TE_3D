@@ -118,7 +118,12 @@
       hallInfo = TE.hallSummary(r),
       four = periodic(r) ? null : TE.fourTerminal(r),
       polar = z => `${fmt(mag(z))} ∠ ${fmt(phase(z))}° (${fmt(z.re)} ${z.im < 0 ? '−' : '+'} ${fmt(Math.abs(z.im))}i)`,
-      spectrum = (rows, unit, floor) => table(['Order', 'Hz', 'Magnitude ' + unit, 'Phase °', 'Real ' + unit, 'Imag ' + unit], rows.map((z, n) => [n, n * (r.frequency ?? 0), mag(z), mag(z) > floor ? phase(z) : null, z.re, z.im]));
+      // As on the page: a harmonic below 1E-9 of the largest harmonic of its quantity (or below the absolute
+      // floor) is rounding noise, and its phase is left blank.
+      spectrum = (rows, unit, floor) => {
+        const threshold = Math.max(floor, 1e-9 * Math.max(...rows.map(mag)));
+        return table(['Order', 'Hz', 'Magnitude ' + unit, 'Phase °', 'Real ' + unit, 'Imag ' + unit], rows.map((z, n) => [n, n * (r.frequency ?? 0), mag(z), mag(z) > threshold ? phase(z) : null, z.re, z.im]));
+      };
     let terminal = (periodic(r) ? '<p>Terminal voltage U = V(source) − V(sink):</p>' : '') + spectrum(hs, 'V', 1e-16);
     if (periodic(r)) {
       terminal += '<p>Terminal current I, entering the source:</p>' + spectrum(terminalData.current, 'A', terminalData.currentFloor);
@@ -132,7 +137,8 @@
       terminal += add('terminal-voltage', cycle(r.terminalVoltage, 'Terminal voltage · V'));
       terminal += add('terminal-current', cycle(r.current, 'Terminal current · A'));
       if (hallInfo.active) {
-        terminal += `<p>Hall voltage V(P+) − V(P−) in Bz = ${esc(fmt(c.magneticField ?? 0))} T:</p>` + table(['Order', 'Hz', 'Magnitude V', 'Phase °', 'Real V', 'Imag V'], hall.harmonics.map((z, n) => [n, n * r.frequency, mag(z), mag(z) > 1e-16 ? phase(z) : null, z.re, z.im]));
+        // Hall harmonics below 1E-12 of the 1ω terminal voltage are rounding noise, as on the page.
+        terminal += `<p>Hall voltage V(P+) − V(P−) in Bz = ${esc(fmt(c.magneticField ?? 0))} T:</p>` + spectrum(hall.harmonics, 'V', Math.max(1e-16, 1e-12 * Math.max(mag(hs[1]), 1e-15)));
         terminal += table(['Hall quantity', 'Value'], [['Hall resistance R_xy = V_H₁/I₁ (Ω)', hallInfo.resistance ? polar(hallInfo.resistance) : 'Not applicable: no terminal current at 1ω']]);
         terminal += add('hall-voltage', cycle(hall.history, 'Hall voltage V(P+) − V(P−) · V'));
       } else terminal += `<p>Hall voltage: not applicable. ${esc(hallInfo.reason)}</p>`;

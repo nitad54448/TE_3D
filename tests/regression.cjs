@@ -620,7 +620,7 @@ async function check(label, fn) {
     // and Th the computed hot-junction temperature (the right contact conducts the heat to 300 K).
     const c = TE.default2D(); for (const m of c.materials) Object.assign(m, {beta: 0, alphaSlope: 0});
     const r = TE.run2D(c), row = 4 * (c.nx + 1), Tc = r.temperature[row + 4], Th = r.temperature[row + 20];
-    const I = 2, a = 2e-4, R = 2e-3 / (1e5 * 1e-6), Rcu = 5e-4 / (5.8e7 * 1e-6), K = 1.5e-6 / 2e-3;
+    const I = 2, a = 2e-4, R = 2e-3 / (1e5 * 1e-6), Rcu = 5e-4 / (TE.libraryCopper.sigma * 1e-6), K = 1.5e-6 / 2e-3;
     close(Tc, (K * Th + I * I * (R / 2 + Rcu)) / (K + a * I), 2e-5, 'cold junction');
     assert(Math.abs(r.temperature[row] - Tc) < .01 && Th > 300 && Th < 300.2 && Math.abs(r.energyResidual) < 1e-8);
     const full = TE.run2D(TE.default2D()); // with β and α′: the example as shipped
@@ -1262,6 +1262,8 @@ async function check(label, fn) {
     assert.equal(a.config.materials.length, 1);
     assert.equal(a.config.materials[0].name, 'Edited');
     assert.equal(a.config.materials[0].rho, 2500);
+    // The geometry changed: the status line says how many cells were repainted, and with which material.
+    assert(e('status').textContent.startsWith('Removed material Second; 2 cells painted with it now use Edited.'), e('status').textContent);
     // Flat signals with 1E-16 numerical noise do not magnify noise into 17-digit axis ticks.
     const noisySvg = a.bodeSvg([{frequency: 1, magnitude: .01, phase: 0, unit: 'Ω'}, {frequency: 10, magnitude: .01 + 1e-18, phase: 0, unit: 'Ω'}], 'magnitude');
     assert(noisySvg.includes('>0.01000</text>'), noisySvg);
@@ -1696,6 +1698,60 @@ async function check(label, fn) {
     // Card fields are reported by model path, never by a generated tooltip id.
     assert(fs.readFileSync(path.join(root, 'assets', 'ui-model.js'), 'utf8').includes('path: fieldPath(e)'));
     void a;
+  });
+  await check('Seventh review: lazy check messages, report noise phases, one sweep validation, final second-law error, one copper', async () => {
+    // Range and material checks keep their messages, now built only on failure.
+    assert.throws(() => TE.checkRange(2e6, 'voltage'), /voltage is outside the application operating range \(absolute limit 1000000 SI units\)/);
+    assert.throws(() => TE.checkRange(.5, 'temperature'), /temperature is outside the application operating range \(1–2000 K\)/);
+    assert.equal(TE.checkRange(-3, 'current'), -3);
+    const bad = new TE.ThermoelectricMaterial({name: 'Q', rho: 1, Cp: 1, k: 1, sigma: -1, alpha: NaN});
+    assert.throws(() => bad.electricalConductivity(300), /^Error: Q: sigma must be positive\.$/);
+    assert.throws(() => bad.seebeck(300), /^Error: Q: alpha must be finite\.$/);
+    assert.throws(() => TE.finite(Infinity, 'X'), /^Error: X must be finite\.$/);
+    // Report: a harmonic below 1E-9 of the largest one of its quantity is noise, so its phase is blank (as on the page).
+    const r = TE.run2D(model(true));
+    r.harmonics.terminalVoltage[2] = {re: 1e-14, im: 1e-14};
+    const html = TE.resultReport(r).html;
+    assert(html.includes('<tr><td>2</td><td>4</td><td>1.41421e-14</td><td>—</td><td>1e-14</td><td>1e-14</td></tr>'), 'noise phase blank');
+    assert(/<tr><td>1<\/td><td>2<\/td><td>[^<]+<\/td><td>-?\d/.test(html), 'real 1ω phase shown');
+    // A sweep validates the model once, then only the time step of each frequency.
+    const sweep = {...model(true), sweep: {enabled: true, min: 1, max: 100, points: 50, spacing: 'log'}}, validate = TE.validate2DConfig;
+    let calls = 0;
+    TE.validate2DConfig = c => (calls++, validate(c));
+    try { assert.equal(TE.validateSweep(sweep).length, 50); } finally { TE.validate2DConfig = validate; }
+    assert.equal(calls, 1);
+    assert.throws(() => TE.validateSweep({...sweep, sweep: {...sweep.sweep, max: 1e307, points: 2}}),
+      e => e.validationIssues?.[0]?.path === 'frequency' && /unrepresentable time step/.test(e.message));
+    // A state past the second-law limit is rejected once, without a damped repeat of the same solve.
+    const flux = () => ({kind: 'flux', value: {bias: 0, amplitude: 0, phase: 0}, h: 0});
+    const cooler = {...TE.default2D(), description: undefined, mode: 'steady', nx: 16, ny: 16, lx: 4e-3, ly: 1.6e-3, depth: 1e-3, magneticField: 1,
+      materials: [{name: 'E', color: '#73d8d0', rho: 7700, Cp: 150, k: 1.5, sigma: 1e5, alpha: 0, beta: 0, alphaSlope: 0, hall: 0, nernst: 2e-4, righiLeduc: 0, magnetoresistance: 0}],
+      materialMap: Array(256).fill(0), thermal: {left: flux(), right: flux(), top: flux(), bottom: {kind: 'temperature', value: {bias: 300, amplitude: 0, phase: 0}, h: 0}},
+      electrical: {kind: 'current', value: {bias: 2, amplitude: 0, phase: 0}, sourceSide: 'left', sinkSide: 'right', sourceRange: [0, 1], sinkRange: [0, 1]}};
+    const solver = TE.from2DConfig(cooler), picard = solver.picard;
+    let attempts = 0;
+    solver.picard = function (...args) { attempts++; return picard.apply(this, args); };
+    assert.throws(() => solver.solveSteady(), /Ettingshausen figure of merit .* ≥ 1/);
+    assert.equal(attempts, 1); assert.equal(solver.undampedFailures, 0);
+    // The tightened conjugate-gradient tolerance stops above the rounding level.
+    const core = fs.readFileSync(path.join(root, 'assets', 'core.js'), 'utf8');
+    assert(core.includes('linearRtol = Math.max(linearRtol / 100, 2e-14)') && !core.includes('1e-16);'));
+    // A worker failure without a message still explains itself.
+    assert(fs.readFileSync(path.join(root, 'assets', 'ui-worker.js'), 'utf8').includes("'Worker error: ' + (e?.message || "));
+    // Built-in examples are validated before they replace the model.
+    const {app: a, el: e, context} = appContext({preset: 'layers'}), before = a.config, assertValid = context.TE.assertValid2DConfig;
+    context.TE.assertValid2DConfig = () => { throw new Error('rejected'); };
+    try { e('preset').value = 'spreading'; await a.loadPreset(); } finally { context.TE.assertValid2DConfig = assertValid; }
+    assert.equal(a.config, before); assert.equal(e('badge').textContent, 'ERROR'); assert.match(e('status').textContent, /Could not load the example: rejected/);
+    // One copper: the startup and Joule examples use the lib/Copper.json values.
+    const copper = app.parseMaterialJson(fs.readFileSync(path.join(root, 'lib', 'Copper.json'), 'utf8')),
+      keys = ['name', 'rho', 'Cp', 'k', 'sigma', 'alpha', 'beta', 'alphaSlope', 'hall', 'nernst', 'righiLeduc', 'magnetoresistance', 'color'];
+    for (const key of keys) assert.equal(TE.libraryCopper[key], copper[key], key);
+    assert.deepEqual(TE.default2D().materials[0], {...TE.libraryCopper});
+    assert.deepEqual(app.jouleContactsConfig().materials[1], {...TE.libraryCopper});
+    assert.equal(app.libraryCopies['Copper.json'][1], TE.libraryCopper);
+    // Documentation: report precision.
+    assert(fs.readFileSync(path.join(root, 'README.md'), 'utf8').includes('projects and CSV files keep full precision, and report tables show 6 significant digits'));
   });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

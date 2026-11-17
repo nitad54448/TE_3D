@@ -348,7 +348,8 @@
         }
       };
       worker.onerror = e => {
-        if (app.worker === worker) finishError('Worker error: ' + e.message);
+        // A script that fails to load or start can report an empty message: always give readable text.
+        if (app.worker === worker) finishError('Worker error: ' + (e?.message || 'the solver could not start or stopped unexpectedly. Reload the page and try again.'));
       };
       worker.addEventListener('messageerror', () => {
         if (app.worker === worker) finishError('Unable to read a solver message.');

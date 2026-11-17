@@ -47,8 +47,8 @@ globalThis.TEApp = {};
   app.paintChanged = false; // a paint stroke changed the material map: validate when it ends
   app.geomFrame = null;
   app.resultFrame = null;
-  // Displayed numbers carry only the digits a result resolves; projects, CSV files and reports keep full
-  // precision. Plain notation from 1E-3 to 1E5, E notation outside; a value that rounds to zero shows as 0.
+  // Displayed numbers carry only the digits a result resolves; projects and CSV files keep full precision,
+  // report tables 6 significant digits. Plain notation from 1E-3 to 1E5, E notation outside; a value that rounds to zero shows as 0.
   const plain = v => Math.abs(v) >= 1e-3 && Math.abs(v) < 1e5,
     eNotation = (v, decimals) => (decimals === undefined ? v.toExponential() : v.toExponential(decimals)).replace('e+', 'E').replace('e', 'E');
   // `digits` significant digits (4 by default: the discretization error is of order 0.1 %).
