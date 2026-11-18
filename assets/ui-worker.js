@@ -27,7 +27,7 @@
   };
   app.accept = function accept(r, {preserveView = false} = {}) {
     const previous = preserveView ? app.captureResultView() : null;
-    TE.checkResult(r);
+    app.checkResult(r);
     app.result = r;
     // A newly displayed result matches the inputs; browsing saved sweep points keeps the edited state.
     if (!preserveView) app.inputsChanged = false;
@@ -313,7 +313,7 @@
             app.$('runProgress').title = 'Completed frequencies plus current cycle budget; convergence can finish earlier.';
           } else if (data.type === 'sweepPoint') {
             try {
-              TE.checkResult(data.result);
+              app.checkResult(data.result);
             } catch (e) {
               finishError(e.message);
               return;
@@ -331,7 +331,7 @@
           } else if (data.type === 'error' && data.unconverged && app.checkpoint && !app.activeSweep) finishUnconverged(data.message);
           else if (data.type === 'sweepError' || data.type === 'error') finishError('Calculation failed: ' + data.message);else if (data.type === 'result') {
             try {
-              TE.checkResult(data.result);
+              app.checkResult(data.result);
             } catch (e) {
               finishError(e.message);
               return;

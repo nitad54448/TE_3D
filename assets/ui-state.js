@@ -5,6 +5,16 @@ globalThis.TEApp = {};
   app.$ = id => document.getElementById(id);
   app.esc = TE.escapeHtml;
   app.clock = null;
+  // Range check of a result (TE.checkResult), made once per result object: results are immutable once
+  // computed, and the check reads every stored value (about 0.1 s at the largest periodic result). The
+  // same result is accepted again whenever a sweep point is selected.
+  const checkedResults = new WeakSet();
+  app.checkResult = r => {
+    if (r !== null && typeof r === 'object' && checkedResults.has(r)) return r;
+    TE.checkResult(r);
+    checkedResults.add(r);
+    return r;
+  };
   // Latest saved complete cycle of the running calculation. It is shown only after Stop or an exhausted
   // cycle budget, so the worker's message stays encoded until then: decoding every checkpoint (tens of MB
   // at the largest mesh, every few seconds) would stall the page. The solver checked it before sending.
@@ -16,7 +26,7 @@ globalThis.TEApp = {};
         const message = encodedCheckpoint;
         encodedCheckpoint = null;
         try {
-          checkpoint = TE.checkResult(TE.decodeWorkerMessage(message).result);
+          checkpoint = app.checkResult(TE.decodeWorkerMessage(message).result);
         } catch {
           checkpoint = null; // unreadable: treated as no saved cycle
         }

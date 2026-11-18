@@ -22,6 +22,24 @@
     }
   };
   const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
+  // Rejects property names that could reach a prototype, at any depth. A walk over the parsed objects,
+  // not a JSON.parse reviver: the reviver is called for every number, which made a large results.json
+  // five times slower to read. Numbers are skipped here; the stack is explicit, so depth cannot overflow.
+  const unsafeKeys = new Set(['__proto__', 'constructor', 'prototype']);
+  const checkKeys = root => {
+    const stack = [root];
+    while (stack.length) {
+      const value = stack.pop();
+      if (value === null || typeof value !== 'object') continue;
+      if (Array.isArray(value)) {
+        for (let i = 0; i < value.length; i++) if (typeof value[i] === 'object' && value[i] !== null) stack.push(value[i]);
+      } else for (const key of Object.keys(value)) {
+        assert(!unsafeKeys.has(key), 'Unsafe JSON property.');
+        if (typeof value[key] === 'object' && value[key] !== null) stack.push(value[key]);
+      }
+    }
+    return root;
+  };
   const same = (a, b) => {
     if (a === b) return true;
     if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
@@ -171,7 +189,7 @@
       let crc = 0xffffffff; for (let i = 0, n = bytes.length; i < n; i++) crc = crcTable[(crc ^ bytes[i]) & 255] ^ (crc >>> 8);
       assert(((crc ^ 0xffffffff) >>> 0) === e.crc, 'Corrupt archive data: ' + name);
       try {
-        return JSON.parse(text.decode(bytes), (key, value) => { assert(!['__proto__', 'constructor', 'prototype'].includes(key), 'Unsafe JSON property.'); return value; });
+        return checkKeys(JSON.parse(text.decode(bytes)));
       } catch (error) { throw new Error('Invalid project JSON in ' + name + ': ' + error.message); }
     };
     assert(has('project.json'), 'This ZIP is not a supported project: project.json is missing. Save projects with Save project.');

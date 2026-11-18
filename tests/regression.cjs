@@ -340,7 +340,9 @@ async function check(label, fn) {
     assert(rcRun.converged && rcRun.periods <= 10 && rcRun.diagnostics.cycleExtrapolations >= 1, `run2D: ${rcRun.periods} cycles`);
     assert.deepEqual(TE.cycleExtrapolation([[0, 0], [1, 2], [1.5, 3]]).shift, [.5, 1]); // λ = 1/2: limit (2, 4)
     assert.equal(TE.cycleExtrapolation([[0], [1], [.5]]), null); // oscillating drift
-    assert.equal(TE.cycleExtrapolation([[0], [1], [1.999]]), null); // λ ≥ 0.995: no reliable limit
+    assert.equal(TE.cycleExtrapolation([[0], [1], [1.9996]]), null); // λ ≥ 0.9995: no reliable limit
+    assert.equal(TE.cycleExtrapolation([[0], [1], [2]]), null); // λ = 1: a drift that does not decay
+    assert.equal(TE.cycleExtrapolation([[0], [1], [1.999]]).factor, 200); // 0.995 ≤ λ < 0.9995: a capped, partial jump
     assert.equal(TE.cycleExtrapolation([[0, 0], [1, 0], [1, .5]]), null); // drift changes direction
   });
   await check('No extrapolation without a periodic state', () => {
@@ -1752,6 +1754,55 @@ async function check(label, fn) {
     assert.equal(app.libraryCopies['Copper.json'][1], TE.libraryCopper);
     // Documentation: report precision.
     assert(fs.readFileSync(path.join(root, 'README.md'), 'utf8').includes('projects and CSV files keep full precision, and report tables show 6 significant digits'));
+  });
+  await check('Eighth review: long strips, reproducible checkpoints, key walk on import, one range check per result, extrapolation windows', async () => {
+    // A strip longer than the former fixed limit of 4000 conjugate-gradient iterations solves, to rounding.
+    const strip = model(); Object.assign(strip, {nx: 4500, ny: 1, lx: .045, ly: 1e-5, materialMap: Array(4500).fill(0)});
+    strip.electrical.value.bias = 1e-3;
+    const long = TE.run2D(strip), expected = 1e-3 * .045 / (1e5 * 1e-5 * 1e-3);
+    assert(Math.abs(long.terminalVoltage / expected - 1) < 1e-10, `strip voltage ${long.terminalVoltage}`);
+    // Running out of iterations is reported as such, and the insulator is named only as the likely cause.
+    const solver = TE.from2DConfig(model()), T = solver.initial(), p = solver.properties(T).p, zero = Array(solver.mesh.n).fill(0);
+    let limit;
+    try { TE.graphSolve(solver.mesh, p.map(v => v.g), zero, zero, new Map([[0, 1], [5, 1], [4, 0], [9, 0]]), {maxIter: 1}); } catch (e) { limit = e; }
+    assert(limit?.iterationLimit && /in 1 iterations/.test(limit.message), String(limit?.message));
+    assert.match(TE.electricalSolveError(limit).message, /^Electrical solve failed .*ran out of iterations.*likely cause/);
+    assert.doesNotMatch(TE.electricalSolveError(limit).message, /Move the electrode/);
+    assert.match(TE.electricalSolveError(new Error('x')).message, /Move the electrode onto a conductor/);
+    // Checkpoints follow the wall clock: taking them must not change the run by a single bit.
+    const leg = TE.default2D(); Object.assign(leg, {mode: 'periodic', nx: 12, ny: 2, frequency: .5, samples: 64, maxPeriods: 40,
+      materialMap: Array.from({length: 24}, (_, i) => i % 12 < 2 || i % 12 >= 10 ? 0 : 1)});
+    leg.electrical.value = {bias: 0, amplitude: 1, phase: 0};
+    const periodic = options => TE.from2DConfig(leg).solvePeriodic(.5, {samples: 64, maxPeriods: 40, ...options});
+    let saved = 0;
+    const quiet = periodic({}), watched = periodic({onCheckpoint: () => { saved++; }, checkpointEvery: 1, checkpointIntervalMs: 0});
+    assert(saved >= 3 && quiet.converged && watched.converged, `${saved} checkpoints`);
+    assert.deepEqual(watched.temperature, quiet.temperature); assert.deepEqual(watched.harmonics, quiet.harmonics);
+    // Unsafe property names are rejected at any depth, without a JSON.parse reviver.
+    for (const data of ['{"materials":[{"prototype":1}]}', '{"a":{"b":[[{"constructor":{}}]]}}']) {
+      await assert.rejects(() => TE.zipFiles([metadataFile(), {name: 'model.json', data}, {name: 'results.json', data: '{}'}]).then(TE.readProjectZip), /Unsafe JSON/);
+    }
+    assert(!fs.readFileSync(path.join(root, 'assets', 'project.js'), 'utf8').includes('JSON.parse(text.decode(bytes), '));
+    // A result is range-checked once on the page, however often it is displayed; a rejected one is never remembered.
+    const checkResult = TE.checkResult; let scans = 0;
+    TE.checkResult = r => (scans++, checkResult(r));
+    try {
+      app.checkResult(dc); app.checkResult(dc); assert.equal(scans, 1);
+      const bad = {...dc, temperature: dc.temperature.map(() => 5000)};
+      assert.throws(() => app.checkResult(bad), /Result rejected/); assert.throws(() => app.checkResult(bad), /Result rejected/); assert.equal(scans, 3);
+    } finally { TE.checkResult = checkResult; }
+    // Anchored runs extrapolate up to a drift ratio of 0.9995; a run without a thermal anchor keeps 0.995.
+    const extrapolation = TE.cycleExtrapolation, windows = [];
+    TE.cycleExtrapolation = (states, options) => (windows.push(options.maxRatio), extrapolation(states, options));
+    try {
+      TE.run2D(rc);
+      assert(windows.length >= 1 && windows.every(v => v === undefined), `anchored: ${windows}`);
+      windows.length = 0;
+      const adiabatic = model(true); adiabatic.maxPeriods = 10; for (const side of ['left', 'right', 'top', 'bottom']) adiabatic.thermal[side] = {kind: 'flux', value: 0};
+      assert.throws(() => TE.run2D(adiabatic), /Periodic state not reached/);
+      assert(windows.length >= 1 && windows.every(v => v === .995), `no anchor: ${windows}`);
+    } finally { TE.cycleExtrapolation = extrapolation; }
+    assert.equal(TE.cycleExtrapolation([[0], [1], [1.999]], {maxRatio: .995}), null);
   });
   console.log(failures ? `\n${failures} regression check(s) FAILED, ${checks} passed.` : `\n${checks} regression checks passed.`);
 })().catch(e => {console.error(e); process.exitCode = 1;});

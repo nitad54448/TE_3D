@@ -174,9 +174,11 @@
       };
       // Aitken-style extrapolation of three successive cycle-start states a, b, c. Returns the shift
       // d·λ/(1 − λ) along d = c − b when the drift is geometric (0 < λ < maxRatio) along a stable
-      // direction (cosine between successive drifts > minCosine); otherwise null. The factor is capped.
+      // direction (cosine between successive drifts > minCosine); otherwise null. The factor is capped:
+      // above λ = maxFactor/(1 + maxFactor) = 0.995 the jump covers only part of the way to the limit, and
+      // is repeated. A drift that does not decay (λ = 1: no periodic state) is never extrapolated.
       TE.cycleExtrapolation = ([a, b, c], {
-        maxRatio = .995,
+        maxRatio = .9995,
         minCosine = .999,
         maxFactor = 200
       } = {}) => {
@@ -345,20 +347,36 @@
           free.push(i);
         }
         const endpoints = mesh.links.map(e => [idx[e.a], idx[e.b]]);
-        // Flat typed arrays of links joining two free nodes: the hot matrix-vector product
-        // then avoids per-link array destructuring and boundary tests.
-        const inner = [];
+        // Flat typed arrays of the edges joining two free nodes: the hot matrix-vector product then avoids
+        // per-link array destructuring and boundary tests. An interior edge carries two parallel half-face
+        // links, one from each adjacent cell: they share one entry (innerEdge maps each link to its edge),
+        // whose conductance is their sum, which nearly halves the product.
+        const inner = [],
+          innerEdge = [],
+          edgeA = [],
+          edgeB = [],
+          edges = new Map();
         endpoints.forEach(([a, b], l) => {
-          if (a >= 0 && b >= 0) inner.push(l);
+          if (a < 0 || b < 0) return;
+          const key = a < b ? a * free.length + b : b * free.length + a;
+          let edge = edges.get(key);
+          if (edge === undefined) {
+            edges.set(key, edge = edgeA.length);
+            edgeA.push(a);
+            edgeB.push(b);
+          }
+          inner.push(l);
+          innerEdge.push(edge);
         });
         const layout = {
           idx,
           free,
           endpoints,
           innerLink: Int32Array.from(inner),
-          innerA: Int32Array.from(inner, l => endpoints[l][0]),
-          innerB: Int32Array.from(inner, l => endpoints[l][1]),
-          innerG: new Float64Array(inner.length)
+          innerEdge: Int32Array.from(innerEdge),
+          innerA: Int32Array.from(edgeA),
+          innerB: Int32Array.from(edgeB),
+          innerG: new Float64Array(edgeA.length)
         };
         for (const name of ['D', 'b', 'x', 'r', 'z', 'p', 'Ap']) layout[name] = new Float64Array(free.length);
         // Bounded cache for callers that repeatedly change boundary-node selections.
@@ -366,13 +384,16 @@
         cache.set(key, layout);
         return layout;
       }
+      // maxIter: by default the larger of 4000 and four times the number of unknowns. Conjugate gradients
+      // carry information one link per iteration, so a strip of N cells between its electrodes needs at
+      // least N iterations (in exact arithmetic at most one per unknown); a fixed limit rejected long meshes.
       TE.graphSolve = (mesh, conductance, diagonal, rhs, fixed, {
         rtol = 2e-12,
-        maxIter = 4000,
+        maxIter,
         initial
       } = {}) => {
         TE.assert(Number.isFinite(rtol) && rtol > 0 && rtol < 1, 'Linear relative tolerance must satisfy 0 < rtol < 1.');
-        TE.assert(Number.isInteger(maxIter) && maxIter > 0, 'Linear iteration limit must be positive.');
+        TE.assert(maxIter === undefined || Number.isInteger(maxIter) && maxIter > 0, 'Linear iteration limit must be positive.');
         TE.assert(conductance.length === mesh.links.length && conductance.every(g => Number.isFinite(g) && g > 0), 'Invalid face conductance.');
         TE.assert(!initial || initial.length === mesh.n && initial.every(Number.isFinite), 'Invalid linear initial guess.');
         TE.assert(rhs.length === mesh.n && diagonal.length === mesh.n && rhs.every(Number.isFinite) && diagonal.every(v => Number.isFinite(v) && v >= 0), 'Invalid linear coefficients.');
@@ -381,6 +402,7 @@
           free,
           endpoints,
           innerLink,
+          innerEdge,
           innerA,
           innerB,
           innerG,
@@ -426,8 +448,9 @@
           free.forEach(node => out[node] = 0);
           return out;
         }
-        const ni = innerLink.length;
-        for (let k = 0; k < ni; k++) innerG[k] = conductance[innerLink[k]];
+        const ni = innerG.length;
+        innerG.fill(0);
+        for (let k = 0; k < innerLink.length; k++) innerG[innerEdge[k]] += conductance[innerLink[k]];
         const multiply = v => {
           for (let i = 0; i < nf; i++) Ap[i] = D[i] * v[i];
           for (let k = 0; k < ni; k++) {
@@ -453,8 +476,9 @@
           norm = Math.sqrt(Math.max(rz, 0));
         const target = rtol * Math.max(Math.sqrt(bDb), 1e-300);
         TE.assert(Number.isFinite(target) && Number.isFinite(norm) && Number.isFinite(rz), 'Linear system exceeds the finite numerical range.');
+        const limit = maxIter ?? Math.max(4000, 4 * nf);
         let iteration = 0;
-        while (norm > target && iteration++ < maxIter) {
+        while (norm > target && iteration++ < limit) {
           multiply(p);
           const den = dot(p, Ap);
           TE.assert(den > 0 && Number.isFinite(den), 'CG failed: matrix not positive definite.');
@@ -470,7 +494,7 @@
           rz = next;
           norm = Math.sqrt(Math.max(rz, 0));
         }
-        TE.assert(norm <= target && x.every(Number.isFinite), 'Sparse linear solver did not converge to a finite result.');
+        if (!(norm <= target && x.every(Number.isFinite))) throw Object.assign(new Error(`Sparse linear solver did not converge to a finite result in ${limit} iterations.`), {iterationLimit: true});
         free.forEach((node, i) => out[node] = x[i]);
         return out;
       };
@@ -667,8 +691,12 @@
         }
         return out;
       }
-      // The one explanation of a failed electrical solve, with or without magnetic field.
-      TE.electricalSolveError = error => new Error(`Electrical solve failed (${error.message}) Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E14), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.`);
+      // The one explanation of a failed electrical solve, with or without magnetic field. A solver that ran
+      // out of iterations (error.iterationLimit) has not shown that an insulator is in the way: the contrast
+      // is then named as the likely cause, not as a fact.
+      TE.electricalSolveError = error => new Error(`Electrical solve failed (${error.message}) ` + (error?.iterationLimit
+        ? 'The iterative solver ran out of iterations. The likely cause is a conductivity contrast beyond about 1E14 between materials that carry current: check the conductivities and the electrode positions.'
+        : 'Current must cross material that is far too insulating compared with the conductors (contrast beyond about 1E14), for example an electrode placed on an insulator. Move the electrode onto a conductor or raise the insulator conductivity.'));
       TE.electricalConnectionMessage = 'Source and sink have no conducting path within double-precision resolution (conductivity contrast beyond about 1E14). The terminal voltage cannot be resolved. Connect the electrodes through conducting material or reduce the conductivity contrast; a small leakage conductivity does not imply zero open-circuit voltage.';
       // The complete rectangular nodal graph is connected. Discard only links beyond the same
       // conductivity contrast used by electrode validation, then test the remaining graph. Links
@@ -1467,7 +1495,8 @@
             maxHeatResidualWatts = 0,
             cycleStarts = [],
             extrapolations = 0;
-          const dt = 1 / (frequency * samples);
+          const dt = 1 / (frequency * samples),
+            anchored = TE.hasThermalAnchor({thermal: this.boundaries});
           // Keep the voltage test consistent with the temperature test: a cycle-to-cycle temperature
           // change of periodicAtol across the strongest Seebeck coefficient moves the terminal voltage
           // by about αmax·periodicAtol. A much stricter voltage tolerance would set the cycle count
@@ -1491,12 +1520,17 @@
             // of heat storage: an independent check of periodicity (thermal drift, missing anchor).
             let cycleEnergyResidual = 0,
               cycleMeanPower = 0;
+            // The snapshots re-solve the electrical problem at every saved sample, which would leave their
+            // potentials as the warm start of the next time step. Checkpoints follow the wall clock, so the
+            // run would then differ in its last digits from one execution to the next: keep the warm start.
+            const warmStart = [this.lastBase, this.lastUnit];
             for (let i = 0; i < samples; i++) {
               const record = this.snapshot(history[i], ((cycle - 1) * samples + i) * dt);
               for (const key of ['voltage', 'Jx', 'Jy', 'qx', 'qy']) traces[key].push(record[key]);
               cycleEnergyResidual += record.energyResidual / samples;
               cycleMeanPower += record.electricalPower / samples;
             }
+            [this.lastBase, this.lastUnit] = warmStart;
             const harmonics = {};
             for (const [key, value] of Object.entries(traces)) harmonics[key] = TE.extractHarmonics(value, 3);
             return {
@@ -1606,7 +1640,9 @@
             cycleStarts.push(T);
             if (cycleStarts.length > 3) cycleStarts.shift();
             if (extrapolate && older && cycleStarts.length === 3 && cycle <= maxPeriods - 2) {
-              const jump = TE.cycleExtrapolation(cycleStarts);
+              // Without a thermal anchor, net heating leaves a drift whose ratio approaches 1 from below: the
+              // wide window would throw such a state toward the operating limit, so the narrow one applies.
+              const jump = TE.cycleExtrapolation(cycleStarts, anchored ? {} : {maxRatio: .995});
               let shifted = jump && T.map((v, i) => v + jump.shift[i]);
               if (shifted) try {
                 this.properties(shifted);
@@ -1624,8 +1660,7 @@
               }
             }
           }
-          const anchored = TE.hasThermalAnchor({thermal: this.boundaries}),
-            failure = new Error(`Periodic state not reached in ${maxPeriods} cycles (combined error ${error.toExponential(2)}).${anchored ? '' : ' ' + TE.anchorHint}`);
+          const failure = new Error(`Periodic state not reached in ${maxPeriods} cycles (combined error ${error.toExponential(2)}).${anchored ? '' : ' ' + TE.anchorHint}`);
           failure.unconverged = true;
           throw failure;
         }
